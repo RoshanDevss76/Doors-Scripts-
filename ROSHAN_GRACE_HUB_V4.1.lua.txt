@@ -1,0 +1,3483 @@
+--[[
+╔══════════════════════════════════════════════════════════════════════╗
+║        ROSHAN GRACE HUB  v4.1 «AEGIS R2»  —  Soul Over Body          ║
+║   by ROSHAN_DEVVS  •  discord.gg/SCyksXHe                            ║
+║   Guard Cloudflare + Roles validados en servidor + Perfil + Temas    ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  CAMBIOS V4.1 (resumen — detalle completo en Créditos > Historial):  ║
+║  • UI RESPONSIVE para móvil: el panel se adapta a cualquier pantalla ║
+║  • FIX baneo en masa: huella HWID única por usuario (nunca cruda)    ║
+║  • Pantalla de baneo rediseñada + loader se cierra bien (sin montarse)║
+║  • Luces animadas: la franja verde y la barra AHORA SÍ se mueven     ║
+║  • Perfil rediseñado + limpieza masiva de baneos en pestaña Dev      ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  CAMBIOS V4.0 (detalle completo en Créditos > Historial):            ║
+║  • Autenticación real vía Cloudflare Worker (firma + rate limit)     ║
+║  • Roles OWNER/CO-OWNER/DEVELOPER/ADMIN/MODERATOR/PREMIUM/USER       ║
+║    decididos SOLO en el servidor (el cliente no puede elevarse)      ║
+║  • Keys ocultas: solo huellas digest en el script (sin texto plano)  ║
+║  • Pantalla de carga real a pantalla completa, responsive y animada  ║
+║  • Pestañas nuevas: Perfil, Roles, Ajustes, Estado, Créditos, Ayuda  ║
+║  • Selector de temas + escala de UI + ajustes guardados              ║
+║  • Todas las conexiones registradas → destroy() limpio sin fugas     ║
+║  • ELIMINADO (regla del proyecto: no manipular remotes ajenos):      ║
+║    autofarm por FireServer, INF.LOVE, destrucción de KillClient,     ║
+║    borrado de remotes de entidades, badge farm, anti-SHAME.          ║
+║    Reemplazados por ESP/alertas visuales (100% cliente).             ║
+╚══════════════════════════════════════════════════════════════════════╝
+]]
+
+-- ══════════════════════════════════════
+--  ANTI-DUPLICADO CON LIMPIEZA REAL
+-- ══════════════════════════════════════
+if _G.RGH_V4 and type(_G.RGH_V4.Destroy) == "function" then
+    pcall(function() _G.RGH_V4.Destroy() end)
+    task.wait(0.25)
+end
+_G.RGH_V4 = {}
+
+-- ══════════════════════════════════════
+--  SERVICIOS
+-- ══════════════════════════════════════
+local Players      = game:GetService("Players")
+local RS           = game:GetService("ReplicatedStorage")
+local Lighting     = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local UIS          = game:GetService("UserInputService")
+local RunService   = game:GetService("RunService")
+local TeleportSvc  = game:GetService("TeleportService")
+local GuiService   = game:GetService("GuiService")
+local CoreGui      = game:GetService("CoreGui")
+local HttpSvc      = game:GetService("HttpService")
+local StatsSvc     = game:GetService("Stats")
+
+local lp = Players.LocalPlayer
+local pg = lp:WaitForChild("PlayerGui")
+
+-- ══════════════════════════════════════
+--  CONFIG CENTRALIZADA (edita SOLO aquí)
+-- ══════════════════════════════════════
+local CONFIG = {
+    Version   = "4.1.0",
+    Codename  = "AEGIS R2",
+    Name      = "ROSHAN GRACE HUB",
+    Owner     = "ROSHAN_DEVVS",
+    Discord   = "https://discord.gg/SCyksXHe",
+
+    -- ✅ URL REAL de tu Guard (ya configurada, no hay que tocar nada).
+    -- Todo lo demás del Guard se configura en el Worker, NO aquí.
+    WorkerURL = "https://roshan-grace-guard.zarachoroshan.workers.dev",
+
+    -- Archivos del ejecutor (guardan SOLO hash / ajustes, nunca keys en texto)
+    KeyFile    = "rgh_v4_key.txt",
+    ConfigFile = "rgh_v4_cfg.json",
+    OwnerFile  = "rgh_v4_owner.txt",
+
+    -- Red
+    CheckCooldown = 15,   -- segundos mínimos entre checks manuales
+    RequestRetry  = 2,    -- reintentos por petición
+    StrictMode    = false,-- true = si el Worker no responde, el hub no se abre
+
+    DebugMode = false,
+}
+
+-- Huellas digest de las keys legacy (generadas con rg_tools.js hash ...).
+-- NO hay ninguna key en texto plano en este script. Las keys nuevas se
+-- registran EN el Worker (/keyadd desde la pestaña Dev) y se validan allí.
+local LOCAL_KEYS = {
+    ["9e324280157d9e16"] = true, -- legacy (key 1)
+    ["10f549fe931da519"] = true, -- legacy (key 2)
+    ["7829e94a58e392df"] = true, -- legacy (key 3)
+    ["3635da3b470cf9a0"] = true, -- legacy (key 4)
+    ["55980da560e133f4"] = true, -- legacy (key 5)
+    ["a3ced8bb40e0d294"] = true, -- legacy (key 6)
+    ["67f7bd5849fdd708"] = true, -- legacy (key 7)
+    ["000a5c4e81b1573d"] = true, -- legacy (key 8)
+    ["93e881c12fd05539"] = true, -- legacy (key 9)
+}
+
+-- Secret compartido con el Worker, OFUSCADO (XOR + Base64). Se decodifica
+-- solo en memoria para validar la firma de las respuestas de /check.
+-- ⚠ REEMPLAZA este bloque: cambia SECRET en el Worker y genera tu bloque con:
+--     node rg_tools.js encode "TU-SECRETO-LARGO-Y-ALEATORIO"
+local SecretEnc = {
+    key  = "4e180bf25119ded993659a31aff2bb31",
+    data = "HF9DxnxYm57aNrdy57P1dgs1X7oYSvOK1ibIdPs=",
+}
+local DEFAULT_SECRET_FP = "e58c71fe" -- huella del secreto de fábrica (aviso si no lo cambiaste)
+
+-- ══════════════════════════════════════
+--  PERMISOS POR ROL (gating de UI en cliente).
+--  Lo que de verdad importa (ban/unban/roles/keys) lo valida el Worker
+--  con OWNER headers: el cliente NO puede concederse permisos.
+-- ══════════════════════════════════════
+local PERMS = {
+    ["OWNER"]     = { dev = true,  vip = true },
+    ["CO-OWNER"]  = { dev = true,  vip = true },
+    ["DEVELOPER"] = { dev = true,  vip = true },
+    ["ADMIN"]     = { dev = false, vip = true },
+    ["MODERATOR"] = { dev = false, vip = true },
+    ["PREMIUM"]   = { dev = false, vip = true },
+    ["USER"]      = { dev = false, vip = false },
+    ["OFFLINE"]   = { dev = false, vip = false },
+    ["BANNED"]    = {},
+}
+local ROLE_META = {
+    ["OWNER"]     = { col = "GOLD",   desc = "Control total del hub y del Guard." },
+    ["CO-OWNER"]  = { col = "CYAN",   desc = "Segunda autoridad. Acceso Dev completo." },
+    ["DEVELOPER"] = { col = "PURPLE", desc = "Equipo de desarrollo. Acceso Dev." },
+    ["ADMIN"]     = { col = "ORANGE", desc = "Administración de la comunidad." },
+    ["MODERATOR"] = { col = "BLUE",   desc = "Moderación de la comunidad." },
+    ["PREMIUM"]   = { col = "PINK",   desc = "Miembro con key premium registrada." },
+    ["USER"]      = { col = "ACCENT", desc = "Acceso estándar al hub." },
+    ["OFFLINE"]   = { col = "GRAY",   desc = "Modo sin conexión con el Guard." },
+}
+local ROLE_ORDER = { "OWNER", "CO-OWNER", "DEVELOPER", "ADMIN", "MODERATOR", "PREMIUM", "USER" }
+
+-- Contenido de Créditos (editable)
+CONFIG.Credits = {
+    Devs = {
+        { "ROSHAN_DEVVS", "OWNER · Fundador del proyecto" },
+        { "AANN_DEV",     "Colaborador legacy (Repriefe Farm v3)" },
+    },
+    Colabs = {
+        { "— añade aquí —", "Colaborador" },
+    },
+}
+CONFIG.VersionHistory = {
+    { "v4.1 «AEGIS R2»", "Interfaz responsive para móvil (nada se estira ni se corta), luces animadas en el hub, Perfil rediseñado, pantalla de baneo nueva, FIX del baneo en masa (huella HWID única por usuario) y limpieza masiva de baneos en la pestaña Dev." },
+    { "v4.0 «AEGIS»",  "Guard Cloudflare con firma, roles validados en servidor, keys por hash, pantalla de carga real, Perfil, Temas, Ajustes guardados, ESP reescrito y limpieza total de exploits de remotes." },
+    { "v3.0 «Soul Over Body»", "Farm de Reprieve, traits, anti-entities y soporte SOB." },
+    { "v1.x – v2.x",   "Versiones iniciales del hub — detalle histórico en Discord." },
+}
+
+-- ══════════════════════════════════════
+--  ENTORNO DE EJECUCIÓN (funciones opcionales del ejecutor)
+--  (digest se forward-declara aquí y se asigna en la sección CRIPTO)
+-- ══════════════════════════════════════
+local digest
+local function httpReq(opts)
+    local cands = { http_request, (syn and syn.request), (http and http.request), request, httprequest }
+    for _, f in ipairs(cands) do
+        if type(f) == "function" then
+            local ok, res = pcall(f, opts)
+            if ok and type(res) == "table" then return res end
+        end
+    end
+    return nil
+end
+local function clipboard(txt)
+    pcall(function()
+        if setclipboard then setclipboard(txt) elseif toclipboard then toclipboard(txt) end
+    end)
+end
+local function fileRead(p)  local ok, r = pcall(readfile, p);  if ok then return r end return nil end
+local function fileWrite(p, c) pcall(function() writefile(p, tostring(c)) end) end
+local function fileExists(p) local ok, r = pcall(isfile, p); if ok then return r end return false end
+local function fileDel(p) pcall(function() delfile(p) end) end
+local function jenc(t) local ok, r = pcall(function() return HttpSvc:JSONEncode(t) end); if ok then return r end return "{}" end
+local function jdec(s) local ok, r = pcall(function() return HttpSvc:JSONDecode(tostring(s)) end); if ok then return r end return nil end
+local function executorName()
+    local ok, r = pcall(function() return (identifyexecutor and identifyexecutor()) or "Desconocido" end)
+    return ok and tostring(r) or "Desconocido"
+end
+local function getHwid()
+    -- ⚠ FIX V4.1 (baneo en masa): NUNCA usamos el HWID crudo del ejecutor.
+    -- Muchos ejecutores de móvil devuelven EL MISMO valor para todos sus
+    -- usuarios; al banear a uno, el Guard extendía el baneo a ese HWID y
+    -- terminaba baneando a todo el que usara el mismo ejecutor.
+    -- Ahora la huella es ÚNICA por usuario: ejecutor + UserId + salt.
+    return ("F-" .. digest(executorName() .. "|" .. tostring(lp.UserId) .. "|" .. SALT)):sub(1, 24)
+end
+
+-- ══════════════════════════════════════
+--  CRIPTO (port exacto del Worker: lane/digest, SALT "rgh4|k|")
+-- ══════════════════════════════════════
+local SALT = "rgh4|k|"
+local B32 = (type(bit32) == "table") and bit32 or nil
+
+local function bxor(a, b)
+    a = math.floor(a) % 4294967296
+    b = math.floor(b) % 4294967296
+    if B32 then return B32.bxor(a, b) end
+    local r, p = 0, 1
+    for _ = 1, 32 do
+        local aa, bb = a % 2, b % 2
+        if aa ~= bb then r = r + p end
+        a = (a - aa) / 2
+        b = (b - bb) / 2
+        p = p * 2
+    end
+    return r
+end
+local function rshift(a, n) return math.floor(math.floor(a) / 2 ^ n) end
+local function imul(a, b)   -- multiplicación 32-bit exacta sin bitops
+    local ah, al = math.floor(a / 65536), math.floor(a) % 65536
+    local bh, bl = math.floor(b / 65536), math.floor(b) % 65536
+    return (al * bl + ((ah * bl + al * bh) % 65536) * 65536) % 4294967296
+end
+local function hex8(n) return string.format("%08x", n) end
+local function lane(s, seed)
+    local h = seed % 4294967296
+    for i = 1, #s do
+        h = bxor(h, string.byte(s, i))
+        h = imul(h, 16777619)
+        h = rshift(h, 15)
+    end
+    h = bxor(h, #s)
+    h = imul(bxor(h, rshift(h, 16)), 0x85ebca6b)
+    h = imul(bxor(h, rshift(h, 13)), 0xc2b2ae35)
+    return bxor(h, rshift(h, 16))
+end
+local function digestFn(s)
+    return hex8(lane(s, 0x811c9dc5)) .. hex8(lane(s .. "\0" .. SALT, 0x9e3779b9))
+end
+digest = digestFn
+
+-- Decodificador XOR + Base64 (sin bitops: compatible con cualquier ejecutor)
+local ENC_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function encXor(a, b)
+    local r, p = 0, 1
+    for _ = 1, 8 do
+        local aa, bb = a % 2, b % 2
+        if aa ~= bb then r = r + p end
+        a, b, p = (a - aa) / 2, (b - bb) / 2, p * 2
+    end
+    return r
+end
+local function encB64Decode(s)
+    s = tostring(s or ""):gsub("[^" .. ENC_B64 .. "=]", "")
+    local bits, n = {}, 0
+    s:gsub(".", function(c)
+        if c ~= "=" then
+            local f = ENC_B64:find(c, 1, true) - 1
+            for i = 6, 1, -1 do
+                n = n + 1
+                bits[n] = (f % 2 ^ i - f % 2 ^ (i - 1) > 0) and "1" or "0"
+            end
+        end
+    end)
+    local out = {}
+    for i = 1, n - 7, 8 do
+        local v = 0
+        for j = 0, 7 do
+            if bits[i + j] == "1" then v = v + 2 ^ (7 - j) end
+        end
+        out[#out + 1] = string.char(math.floor(v))
+    end
+    return table.concat(out)
+end
+local function encDecode(t)
+    if type(t) ~= "table" or type(t.key) ~= "string" or type(t.data) ~= "string" or t.key == "" then return "" end
+    local raw = encB64Decode(t.data)
+    if raw == "" then return "" end
+    local k, out = t.key, {}
+    for i = 1, #raw do
+        out[#out + 1] = string.char(encXor(raw:byte(i), k:byte((i - 1) % #k + 1)))
+    end
+    return table.concat(out)
+end
+local WORKER_SECRET = encDecode(SecretEnc)
+
+-- ══════════════════════════════════════
+--  CONEXIONES REGISTRADAS (fix de fugas del v3)
+-- ══════════════════════════════════════
+local Conns = {}
+local function addConn(c)
+    if c then Conns[#Conns + 1] = c end
+    return c
+end
+
+-- ══════════════════════════════════════
+--  MOTOR DE TEMAS (dark + acento configurable)
+-- ══════════════════════════════════════
+local THEMES = {
+    ["Verde Neón"] = {
+        BG = Color3.fromRGB(  8,  12,   8), BG2  = Color3.fromRGB( 12,  18,  12),
+        BG3= Color3.fromRGB(16,24,16), BG4 = Color3.fromRGB( 22,  34,  22),
+        CARD = Color3.fromRGB( 11,  16,  11),
+        ACCENT   = Color3.fromRGB(  0, 230,  80), ACCENT2  = Color3.fromRGB(  0, 180,  60),
+        ACCENTD  = Color3.fromRGB(  0,  80,  25), ACCENTS  = Color3.fromRGB(  0,  28,   8),
+        ACCENTHI = Color3.fromRGB( 80, 255, 140),
+        GLOW_A = Color3.fromRGB(  9,  14,   9), GLOW_B = Color3.fromRGB(  4,   8,   4),
+        SHADOW = Color3.fromRGB(  0,  10,   0),
+    },
+    ["Esmeralda"] = {
+        BG = Color3.fromRGB(  6,  12,  10), BG2  = Color3.fromRGB( 10,  18,  15),
+        BG3= Color3.fromRGB(14,26,21), BG4 = Color3.fromRGB( 20,  36,  30),
+        CARD = Color3.fromRGB(  9,  16,  13),
+        ACCENT   = Color3.fromRGB(  0, 205, 120), ACCENT2  = Color3.fromRGB(  0, 155,  90),
+        ACCENTD  = Color3.fromRGB(  0,  70,  40), ACCENTS  = Color3.fromRGB(  0,  26,  16),
+        ACCENTHI = Color3.fromRGB( 70, 255, 175),
+        GLOW_A = Color3.fromRGB(  8,  14,  11), GLOW_B = Color3.fromRGB(  3,   7,   5),
+        SHADOW = Color3.fromRGB(  0,   9,   5),
+    },
+    ["Aqua"] = {
+        BG = Color3.fromRGB(  6,  10,  14), BG2  = Color3.fromRGB( 10,  16,  22),
+        BG3= Color3.fromRGB(14,22,30), BG4 = Color3.fromRGB( 20,  32,  42),
+        CARD = Color3.fromRGB(  9,  14,  19),
+        ACCENT   = Color3.fromRGB(  0, 220, 230), ACCENT2  = Color3.fromRGB(  0, 170, 185),
+        ACCENTD  = Color3.fromRGB(  0,  78,  92), ACCENTS  = Color3.fromRGB(  0,  26,  32),
+        ACCENTHI = Color3.fromRGB( 90, 255, 255),
+        GLOW_A = Color3.fromRGB(  8,  13,  17), GLOW_B = Color3.fromRGB(  3,   6,   9),
+        SHADOW = Color3.fromRGB(  0,   6,  10),
+    },
+    ["Lima Tóxico"] = {
+        BG = Color3.fromRGB( 10,  12,   4), BG2  = Color3.fromRGB( 15,  18,   6),
+        BG3= Color3.fromRGB(21,26,  9), BG4 = Color3.fromRGB( 31,  38,  14),
+        CARD = Color3.fromRGB( 12,  15,   5),
+        ACCENT   = Color3.fromRGB(175, 255,   0), ACCENT2  = Color3.fromRGB(135, 205,   0),
+        ACCENTD  = Color3.fromRGB( 62,  92,   0), ACCENTS  = Color3.fromRGB( 20,  30,   0),
+        ACCENTHI = Color3.fromRGB(215, 255, 100),
+        GLOW_A = Color3.fromRGB( 11,  13,   5), GLOW_B = Color3.fromRGB(  5,   7,   2),
+        SHADOW = Color3.fromRGB(  4,   8,   0),
+    },
+    ["Oro VIP"] = {
+        BG = Color3.fromRGB( 12,  10,   6), BG2  = Color3.fromRGB( 18,  15,   9),
+        BG3= Color3.fromRGB(25,21, 13), BG4 = Color3.fromRGB( 36,  30,  19),
+        CARD = Color3.fromRGB( 14,  12,   8),
+        ACCENT   = Color3.fromRGB(240, 200,  60), ACCENT2  = Color3.fromRGB(190, 152,  30),
+        ACCENTD  = Color3.fromRGB( 92,  72,  14), ACCENTS  = Color3.fromRGB( 32,  25,   6),
+        ACCENTHI = Color3.fromRGB(255, 232, 130),
+        GLOW_A = Color3.fromRGB( 13,  11,   7), GLOW_B = Color3.fromRGB(  6,   5,   3),
+        SHADOW = Color3.fromRGB(  6,   4,   0),
+    },
+}
+-- colores fijos (no dependen del tema)
+local FIXED = {
+    WHITE  = Color3.new(1, 1, 1),
+    GRAY   = Color3.fromRGB(120, 150, 120),
+    GRAYLT = Color3.fromRGB(180, 200, 180),
+    RED    = Color3.fromRGB(255,  60,  60),
+    REDSFT = Color3.fromRGB(180,  30,  30),
+    GOLD   = Color3.fromRGB(220, 185,  40),
+    CYAN   = Color3.fromRGB( 40, 210, 200),
+    PURPLE = Color3.fromRGB(150,  60, 255),
+    ORANGE = Color3.fromRGB(255, 130,  30),
+    PINK   = Color3.fromRGB(255,  80, 180),
+    BLUE   = Color3.fromRGB( 60, 120, 255),
+}
+
+local M = {}
+for k, v in pairs(FIXED) do M[k] = v end
+for k, v in pairs(THEMES["Verde Neón"]) do M[k] = v end
+
+-- V4.1: closures que se re-ejecutan al cambiar de tema (definidas ANTES de
+-- applyTheme para que cualquier elemento pueda registrar su refresh)
+local ThemeFns = {}
+local function regFn(fn) ThemeFns[#ThemeFns + 1] = fn end
+
+local ThemeReg = {} -- { {obj, prop, role} | {obj, kind="grad", roleA, roleB} }
+local function reg(obj, prop, role)
+    ThemeReg[#ThemeReg + 1] = { obj = obj, prop = prop, role = role }
+    return obj
+end
+local function regGrad(g, roleA, roleB)
+    ThemeReg[#ThemeReg + 1] = { obj = g, kind = "grad", roleA = roleA, roleB = roleB }
+    return g
+end
+local function applyTheme(name)
+    local t = THEMES[name] or THEMES["Verde Neón"]
+    for k, v in pairs(t) do M[k] = v end
+    for _, r in ipairs(ThemeReg) do
+        pcall(function()
+            if r.kind == "grad" then
+                r.obj.Color = ColorSequence.new(M[r.roleA], M[r.roleB])
+            else
+                r.obj[r.prop] = M[r.role]
+            end
+        end)
+    end
+    for _, fn in ipairs(ThemeFns) do pcall(fn) end -- V4.1: refresca elementos animados
+    return name
+end
+
+-- ══════════════════════════════════════
+--  HELPERS UI
+-- ══════════════════════════════════════
+local function tw(obj, props, t, sty, dir)
+    pcall(function()
+        TweenService:Create(obj,
+            TweenInfo.new(t or 0.18, sty or Enum.EasingStyle.Quart, dir or Enum.EasingDirection.Out),
+            props):Play()
+    end)
+end
+local function Corner(p, r)
+    local c = Instance.new("UICorner", p)
+    c.CornerRadius = UDim.new(0, r or 6)
+    return c
+end
+-- Stroke con registro de tema: Stroke(p, colorFija, grosor) ó Stroke(p, nil, grosor, "ROLE")
+local function Stroke(p, col, th, role)
+    local s = Instance.new("UIStroke", p)
+    s.Color = col or M.ACCENT
+    s.Thickness = th or 1
+    if role then reg(s, "Color", role) end
+    return s
+end
+local function Gradient(p, roleA, roleB, rot)
+    local g = Instance.new("UIGradient", p)
+    g.Color = ColorSequence.new(M[roleA] or M.BG, M[roleB] or M.BG2)
+    g.Rotation = rot or 90
+    regGrad(g, roleA, roleB)
+    return g
+end
+
+-- ══════════════════════════════════════
+--  V4.1 · LUCES ANIMADAS
+--  addSweep: hace que un gradiente recorra la franja (la luz SE MUEVE)
+--  shine3 : gradiente acento → acento brillo → acento (para el barrido)
+-- ══════════════════════════════════════
+local function addSweep(g, speed)
+    task.spawn(function()
+        speed = speed or 0.22
+        while g.Parent do
+            local t = (os.clock() * speed) % 1
+            g.Offset = Vector2.new(t * 2 - 1, 0)
+            task.wait(0.033)
+        end
+    end)
+end
+local function shine3(roleA, roleHi)
+    return ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   M[roleA]  or M.ACCENT),
+        ColorSequenceKeypoint.new(0.5, M[roleHi] or M.ACCENTHI),
+        ColorSequenceKeypoint.new(1,   M[roleA]  or M.ACCENT),
+    }
+end
+
+local function cam()
+    return workspace.CurrentCamera
+end
+
+-- ══════════════════════════════════════
+--  SCREENGUI + ESCALA
+-- ══════════════════════════════════════
+local SG = Instance.new("ScreenGui")
+SG.Name = "RGH_V4"
+SG.ResetOnSpawn = false
+SG.IgnoreGuiInset = true
+SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+if not pcall(function() SG.Parent = CoreGui end) then SG.Parent = pg end
+
+local UIScaleObj = Instance.new("UIScale")
+UIScaleObj.Scale = 1
+UIScaleObj.Parent = SG
+
+-- V4.1: capa de overlays a pantalla completa (loader / key / baneo).
+-- Va SIN UIScale: sus layouts son responsive y no se encogen con el panel.
+local SGO = Instance.new("ScreenGui")
+SGO.Name = "RGH_V4_OVERLAY"
+SGO.ResetOnSpawn = false
+SGO.IgnoreGuiInset = true
+SGO.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+SGO.DisplayOrder = 10
+if not pcall(function() SGO.Parent = CoreGui end) then SGO.Parent = pg end
+
+-- ══════════════════════════════════════
+--  NOTIFICACIONES (mejoradas: icono, tap para cerrar, sin solaparse)
+-- ══════════════════════════════════════
+local notifStack = {}
+local NotifDur = 4
+
+local function reflowNotifs()
+    for i, nf in ipairs(notifStack) do
+        tw(nf, { Position = UDim2.new(1, -296, 1, -(i * 58 + 10)) }, 0.25, Enum.EasingStyle.Back)
+    end
+end
+local function Notify(msg, col, dur, icon)
+    col = col or M.ACCENT
+    dur = dur or NotifDur
+    icon = icon or "◆"
+
+    local f = Instance.new("TextButton", SGO)
+    f.Size = UDim2.new(0, 288, 0, 50)
+    f.Position = UDim2.new(1, 300, 1, -68)
+    f.BackgroundColor3 = M.BG2
+    f.BorderSizePixel = 0
+    f.ZIndex = 300
+    f.Text = ""
+    f.AutoButtonColor = false
+    Corner(f, 9)
+    Stroke(f, col, 1.5)
+
+    local bar = Instance.new("Frame", f)
+    bar.Size = UDim2.new(0, 3, 1, -12); bar.Position = UDim2.new(0, 6, 0, 6)
+    bar.BackgroundColor3 = col; bar.BorderSizePixel = 0; bar.ZIndex = 301; Corner(bar, 2)
+
+    local icol = Instance.new("TextLabel", f)
+    icol.Size = UDim2.new(0, 22, 1, 0); icol.Position = UDim2.new(0, 12, 0, 0)
+    icol.BackgroundTransparency = 1; icol.Font = Enum.Font.GothamBold
+    icol.Text = icon; icol.TextColor3 = col; icol.TextSize = 14; icol.ZIndex = 301
+
+    local lbl = Instance.new("TextLabel", f)
+    lbl.Size = UDim2.new(1, -46, 1, -6); lbl.Position = UDim2.new(0, 36, 0, 3)
+    lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.Gotham
+    lbl.Text = msg; lbl.TextSize = 11; lbl.TextColor3 = M.GRAYLT
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextWrapped = true
+    lbl.TextYAlignment = Enum.TextYAlignment.Center; lbl.ZIndex = 301
+
+    local prog = Instance.new("Frame", f)
+    prog.Size = UDim2.new(1, -12, 0, 2); prog.Position = UDim2.new(0, 6, 1, -3)
+    prog.BackgroundColor3 = col; prog.BorderSizePixel = 0; prog.ZIndex = 301; Corner(prog, 1)
+
+    local function kill()
+        local idx = table.find(notifStack, f)
+        if idx then table.remove(notifStack, idx) end
+        tw(f, { Position = UDim2.new(1, 300, f.Position.Y.Scale, f.Position.Y.Offset) }, 0.2)
+        task.delay(0.22, function() pcall(function() f:Destroy() end) end)
+        task.delay(0.26, reflowNotifs)
+    end
+
+    table.insert(notifStack, 1, f)
+    reflowNotifs()
+    tw(prog, { Size = UDim2.new(0, 0, 0, 2) }, dur, Enum.EasingStyle.Linear)
+    f.MouseButton1Click:Connect(kill)
+    task.delay(dur, function()
+        if f.Parent then kill() end
+    end)
+    return f
+end
+
+-- ══════════════════════════════════════
+--  PANTALLA DE CARGA REAL (V4.1: elementos apilados, nada se solapa,
+--  responsive, con luz que se mueve y cierre limpio en baneos)
+-- ══════════════════════════════════════
+local loaderKilled = false
+
+local Loader = Instance.new("Frame", SGO)
+Loader.Name = "Loader"
+Loader.Size = UDim2.fromScale(1, 1)
+Loader.Position = UDim2.fromScale(0, 0)
+Loader.BackgroundColor3 = Color3.fromRGB(4, 6, 4)
+Loader.BorderSizePixel = 0
+Loader.ZIndex = 600
+reg(Loader, "BackgroundColor3", "BG")
+
+local lTop = Instance.new("Frame", Loader)
+lTop.Size = UDim2.new(0.62, 0, 0, 2); lTop.Position = UDim2.new(0.19, 0, 0, 0)
+lTop.BackgroundColor3 = M.ACCENT; lTop.BorderSizePixel = 0; lTop.ZIndex = 601
+reg(lTop, "BackgroundColor3", "ACCENT")
+local lTopG = Instance.new("UIGradient", lTop)
+lTopG.Color = shine3("ACCENT", "ACCENTHI")
+addSweep(lTopG, 0.16) -- la luz de arriba SÍ se mueve
+
+-- Contenedor central apilado (UIListLayout: imposible que se monten los textos)
+local lStack = Instance.new("Frame", Loader)
+lStack.AnchorPoint = Vector2.new(0.5, 0.5)
+lStack.Position = UDim2.new(0.5, 0, 0.42, 0)
+lStack.Size = UDim2.new(1, -36, 0, 250)
+lStack.BackgroundTransparency = 1
+lStack.ZIndex = 601
+local lLL = Instance.new("UIListLayout", lStack)
+lLL.FillDirection = Enum.FillDirection.Vertical
+lLL.HorizontalAlignment = Enum.HorizontalAlignment.Center
+lLL.VerticalAlignment = Enum.VerticalAlignment.Center
+lLL.Padding = UDim.new(0, 10)
+
+local lLogo = Instance.new("TextLabel", lStack)
+lLogo.BackgroundTransparency = 1
+lLogo.Size = UDim2.new(1, 0, 0, 34)
+lLogo.Font = Enum.Font.GothamBold
+lLogo.Text = ""
+lLogo.TextColor3 = M.ACCENT; lLogo.TextSize = 30; lLogo.ZIndex = 601
+reg(lLogo, "TextColor3", "ACCENT")
+
+local lSub = Instance.new("TextLabel", lStack)
+lSub.BackgroundTransparency = 1
+lSub.Size = UDim2.new(1, 0, 0, 16)
+lSub.Font = Enum.Font.Gotham
+lSub.Text = "v4.1  ·  AEGIS R2  ·  " .. CONFIG.Owner
+lSub.TextColor3 = M.ACCENT2; lSub.TextSize = 12; lSub.ZIndex = 601
+reg(lSub, "TextColor3", "ACCENT2")
+
+local lSpin = Instance.new("TextLabel", lStack)
+lSpin.BackgroundTransparency = 1
+lSpin.Size = UDim2.new(0, 36, 0, 36)
+lSpin.Font = Enum.Font.GothamBold
+lSpin.Text = "◆"
+lSpin.TextColor3 = M.ACCENTHI; lSpin.TextSize = 22; lSpin.ZIndex = 601
+reg(lSpin, "TextColor3", "ACCENTHI")
+
+local lStatus = Instance.new("TextLabel", lStack)
+lStatus.BackgroundTransparency = 1
+lStatus.Size = UDim2.new(1, 0, 0, 16)
+lStatus.Font = Enum.Font.Gotham
+lStatus.Text = "Iniciando..."
+lStatus.TextColor3 = M.GRAYLT; lStatus.TextSize = 12; lStatus.ZIndex = 601
+
+local lBarBG = Instance.new("Frame", lStack)
+lBarBG.Size = UDim2.new(0.5, 0, 0, 8)
+lBarBG.BackgroundColor3 = M.ACCENTS; lBarBG.BorderSizePixel = 0; lBarBG.ZIndex = 601
+Corner(lBarBG, 100)
+reg(lBarBG, "BackgroundColor3", "ACCENTS")
+Stroke(lBarBG, nil, 1, "ACCENTD")
+
+local lBarFill = Instance.new("Frame", lBarBG)
+lBarFill.Size = UDim2.new(0, 0, 1, 0)
+lBarFill.BackgroundColor3 = M.ACCENT
+lBarFill.BorderSizePixel = 0; lBarFill.ZIndex = 602
+Corner(lBarFill, 100)
+reg(lBarFill, "BackgroundColor3", "ACCENT")
+local lBarG = Instance.new("UIGradient", lBarFill)
+lBarG.Color = shine3("ACCENT", "ACCENTHI")
+addSweep(lBarG, 0.55) -- brillo recorriendo la barra de progreso
+
+local lPct = Instance.new("TextLabel", lStack)
+lPct.BackgroundTransparency = 1
+lPct.Size = UDim2.new(1, 0, 0, 14)
+lPct.Font = Enum.Font.GothamBold
+lPct.Text = "0%"
+lPct.TextColor3 = M.ACCENT2; lPct.TextSize = 11; lPct.ZIndex = 601
+reg(lPct, "TextColor3", "ACCENT2")
+
+local lFoot = Instance.new("TextLabel", Loader)
+lFoot.BackgroundTransparency = 1
+lFoot.AnchorPoint = Vector2.new(0.5, 0.5)
+lFoot.Position = UDim2.new(0.5, 0, 0.94, 0)
+lFoot.Size = UDim2.new(0.9, 0, 0, 14)
+lFoot.Font = Enum.Font.Gotham
+lFoot.Text = CONFIG.Name .. "  ·  " .. CONFIG.Discord:gsub("https://", "")
+lFoot.TextColor3 = M.GRAY; lFoot.TextSize = 10; lFoot.ZIndex = 601
+
+-- Typing del logo (se apaga solo si el loader se cierra)
+task.spawn(function()
+    local full = CONFIG.Name
+    for i = 1, #full do
+        if loaderKilled or not lLogo.Parent then return end
+        lLogo.Text = full:sub(1, i)
+        task.wait(0.035)
+    end
+end)
+addConn(RunService.Heartbeat:Connect(function(dt)
+    if lSpin.Parent and not loaderKilled then
+        lSpin.Rotation = (lSpin.Rotation + dt * 220) % 360
+    end
+end))
+
+local lastP = 0
+local function setLoad(p, msg)
+    p = math.clamp(p, 0, 1)
+    lastP = p
+    lBarFill.Size = UDim2.new(p, 0, 1, 0)
+    lPct.Text = math.floor(p * 100 + 0.5) .. "%"
+    if msg then lStatus.Text = msg end
+end
+local function fadeLoader(fast)
+    if loaderKilled then return end
+    loaderKilled = true
+    tw(Loader, { BackgroundTransparency = 1 }, fast and 0.25 or 0.45)
+    for _, o in ipairs(lStack:GetChildren()) do
+        if o:IsA("TextLabel") or o:IsA("Frame") then
+            tw(o, { TextTransparency = 1, BackgroundTransparency = 1 }, fast and 0.25 or 0.4)
+        end
+    end
+    tw(lBarFill, { BackgroundTransparency = 1 }, fast and 0.25 or 0.4)
+    tw(lTop, { BackgroundTransparency = 1 }, fast and 0.2 or 0.4)
+    tw(lFoot, { TextTransparency = 1 }, fast and 0.2 or 0.4)
+    task.delay(fast and 0.3 or 0.55, function()
+        pcall(function() Loader:Destroy() end)
+    end)
+end
+local function loaderDone()
+    setLoad(1, "¡Listo! Disfruta el hub.")
+    task.wait(0.4)
+    fadeLoader(false)
+end
+-- FIX V4.1: al banear se llama a esto ANTES de mostrar la pantalla de baneo,
+-- para que el loader no quede montado detrás (el bug de la foto)
+local function hideLoaderNow()
+    if loaderKilled then return end
+    loaderKilled = true
+    pcall(function() Loader:Destroy() end)
+end
+setLoad(0.03, "Iniciando núcleo v4.1...")
+
+-- ══════════════════════════════════════
+--  ESTADO GLOBAL DE SESIÓN
+-- ══════════════════════════════════════
+local state = {
+    noClip = false, infJump = false, regenHP = false, antiVoid = false,
+    fly = false, speedOn = false, jumpOn = false, fullbright = false,
+    entityESP = false, playerESP = false, beaconESP = false,
+    antiLag = false, antiAFK = false, fpsHud = false,
+    walkSpeed = 16, jumpPower = 50, flySpeed = 55,
+}
+
+local cfg = {
+    theme = "Verde Neón",
+    scale = 1,
+    notifDur = 4,
+    fpsHud = false,
+}
+NotifDur = cfg.notifDur
+
+local Auth = {
+    role = "OFFLINE",
+    status = "OFFLINE",   -- ONLINE | OFFLINE
+    keyHash = nil,
+    banned = false,
+    lastRes = nil,
+    ownerKey = nil,
+}
+local function hasPerm(perm)
+    local p = PERMS[Auth.role]
+    return p ~= nil and p[perm] == true
+end
+
+-- ══════════════════════════════════════
+--  BOTÓN FLOTANTE "R" — pulso + drag + feedback
+-- ══════════════════════════════════════
+local RBtn = Instance.new("TextButton", SG)
+RBtn.Size = UDim2.new(0, 62, 0, 62)
+RBtn.Position = UDim2.new(0, 14, 0.5, -28)
+RBtn.BackgroundColor3 = M.BG2
+RBtn.BorderSizePixel = 0
+RBtn.ZIndex = 200
+RBtn.Font = Enum.Font.GothamBold
+RBtn.Text = "R"
+RBtn.TextColor3 = M.ACCENT
+RBtn.TextSize = 22
+RBtn.AutoButtonColor = false
+RBtn.Visible = false
+Corner(RBtn, 100)
+reg(RBtn, "BackgroundColor3", "BG2")
+reg(RBtn, "TextColor3", "ACCENT")
+local rStroke = Stroke(RBtn, nil, 2.5, "ACCENT")
+
+local rGlow = Instance.new("ImageLabel", RBtn)
+rGlow.Size = UDim2.fromScale(1, 1)
+rGlow.BackgroundTransparency = 1
+rGlow.Image = "rbxassetid://125683963842297"
+rGlow.ImageColor3 = M.ACCENT
+rGlow.ImageTransparency = 0.82
+rGlow.ZIndex = 199
+
+task.spawn(function()
+    while RBtn.Parent do
+        tw(rStroke, { Thickness = 3.8, Color = M.ACCENTHI }, 0.85, Enum.EasingStyle.Sine)
+        tw(rGlow, { ImageTransparency = 0.68 }, 0.85, Enum.EasingStyle.Sine)
+        task.wait(0.85)
+        tw(rStroke, { Thickness = 2.2, Color = M.ACCENT }, 0.85, Enum.EasingStyle.Sine)
+        tw(rGlow, { ImageTransparency = 0.82 }, 0.85, Enum.EasingStyle.Sine)
+        task.wait(0.85)
+    end
+end)
+
+RBtn.MouseButton1Down:Connect(function()
+    tw(RBtn, { Size = UDim2.new(0, 54, 0, 54) }, 0.08, Enum.EasingStyle.Quad)
+    tw(rStroke, { Thickness = 4.5, Color = M.ACCENTHI }, 0.08, Enum.EasingStyle.Quad)
+end)
+RBtn.MouseButton1Up:Connect(function()
+    tw(RBtn, { Size = UDim2.new(0, 62, 0, 62) }, 0.15, Enum.EasingStyle.Back)
+    tw(rStroke, { Thickness = 2.2, Color = M.ACCENT }, 0.15, Enum.EasingStyle.Quad)
+end)
+
+-- ══════════════════════════════════════
+--  DRAG HELPER (conexiones registradas, sin duplicar handlers)
+-- ══════════════════════════════════════
+local function makeDraggable(obj, allowStart)
+    local dragging, moved = false, false
+    local ds, sp = nil, nil
+    addConn(obj.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch
+        or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            if allowStart and not allowStart(i) then return end
+            dragging = true
+            moved = false
+            ds = Vector2.new(i.Position.X, i.Position.Y)
+            sp = obj.Position
+        end
+    end))
+    addConn(UIS.InputChanged:Connect(function(i)
+        if not dragging then return end
+        if i.UserInputType == Enum.UserInputType.Touch
+        or i.UserInputType == Enum.UserInputType.MouseMovement then
+            -- V4.1: compensa la escala de UI para que el dedo siga 1:1 el elemento
+            local s = math.max(UIScaleObj.Scale, 0.05)
+            local d = (Vector2.new(i.Position.X, i.Position.Y) - ds) / s
+            if d.Magnitude > 8 then moved = true end
+            if moved then
+                obj.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+            end
+        end
+    end))
+    addConn(UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch
+        or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end))
+    return function() return moved end
+end
+local rbnMoved = makeDraggable(RBtn)
+
+local hubVisible = false
+
+-- ══════════════════════════════════════
+--  PANEL PRINCIPAL
+-- ══════════════════════════════════════
+local PW, PH = 470, 540
+
+local shadow = Instance.new("Frame", SG)
+shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+shadow.Size = UDim2.new(0, PW + 16, 0, PH + 16)
+shadow.Position = UDim2.new(0.5, 0, 0.5, 10)
+shadow.BackgroundColor3 = M.SHADOW
+shadow.BackgroundTransparency = 0.5
+shadow.BorderSizePixel = 0
+shadow.ZIndex = 9
+shadow.Visible = false
+Corner(shadow, 18)
+reg(shadow, "BackgroundColor3", "SHADOW")
+
+local MF = Instance.new("Frame", SG)
+MF.Name = "HubPanel"
+MF.AnchorPoint = Vector2.new(0.5, 0.5)
+MF.Size = UDim2.new(0, PW, 0, PH)
+MF.Position = UDim2.new(0.5, 0, 0.5, 0)
+MF.BackgroundColor3 = M.BG
+MF.BorderSizePixel = 0
+MF.Active = true
+MF.ClipsDescendants = true
+MF.ZIndex = 10
+MF.Visible = false
+Corner(MF, 14)
+Stroke(MF, nil, 1.5, "ACCENTD")
+Gradient(MF, "GLOW_A", "GLOW_B", 135)
+
+local topLine = Instance.new("Frame", MF)
+topLine.Size = UDim2.new(0.6, 0, 0, 2); topLine.Position = UDim2.new(0.2, 0, 0, 0)
+topLine.BackgroundColor3 = M.ACCENT; topLine.BorderSizePixel = 0
+topLine.BackgroundTransparency = 0.35; topLine.ZIndex = 11
+reg(topLine, "BackgroundColor3", "ACCENT")
+-- V4.1: la luz del borde superior AHORA se mueve (barrido de brillo)
+local topG = Instance.new("UIGradient", topLine)
+topG.Color = shine3("ACCENT", "ACCENTHI")
+addSweep(topG, 0.18)
+regFn(function() topG.Color = shine3("ACCENT", "ACCENTHI") end)
+
+local mfMoved = makeDraggable(MF, function(i)
+    return (i.Position.Y - MF.AbsolutePosition.Y) < 60
+end)
+
+-- ── V4.1 · TAMAÑO RESPONSIVE ─────────────────────
+-- El panel se adapta a la pantalla del móvil: nada se estira ni se corta.
+local function applyPanelSize()
+    local c = cam()
+    local v = c and c.ViewportSize or Vector2.new(1280, 720)
+    local w = math.clamp(v.X - 14, 330, PW)
+    local h = math.clamp(v.Y - 14, 320, PH)
+    MF.Size = UDim2.new(0, w, 0, h)
+    shadow.Size = UDim2.new(0, w + 16, 0, h + 16)
+end
+applyPanelSize()
+local lastVP = nil
+addConn(RunService.Heartbeat:Connect(function()
+    local c = cam()
+    local v = c and c.ViewportSize
+    if v and v ~= lastVP then
+        lastVP = v
+        applyPanelSize()
+    end
+end))
+
+-- ── HEADER ────────────────────────────────────────────────────
+local Hdr = Instance.new("Frame", MF)
+Hdr.Size = UDim2.new(1, 0, 0, 56)
+Hdr.BackgroundColor3 = M.BG2
+Hdr.BorderSizePixel = 0; Hdr.ZIndex = 11; Corner(Hdr, 14)
+reg(Hdr, "BackgroundColor3", "BG2")
+local hdrPatch = Instance.new("Frame", Hdr)
+hdrPatch.Size = UDim2.new(1, 0, 0, 14); hdrPatch.Position = UDim2.new(0, 0, 1, -14)
+hdrPatch.BackgroundColor3 = M.BG2; hdrPatch.BorderSizePixel = 0; hdrPatch.ZIndex = 11
+reg(hdrPatch, "BackgroundColor3", "BG2")
+
+local hdrLine = Instance.new("Frame", MF)
+hdrLine.Size = UDim2.new(1, -20, 0, 1); hdrLine.Position = UDim2.new(0, 10, 0, 56)
+hdrLine.BackgroundColor3 = M.ACCENTD; hdrLine.BorderSizePixel = 0; hdrLine.ZIndex = 11
+reg(hdrLine, "BackgroundColor3", "ACCENTD")
+
+local logoBadge = Instance.new("Frame", Hdr)
+logoBadge.Size = UDim2.new(0, 34, 0, 34); logoBadge.Position = UDim2.new(0, 10, 0.5, -17)
+logoBadge.BackgroundColor3 = M.ACCENTS; logoBadge.BorderSizePixel = 0; logoBadge.ZIndex = 12
+Corner(logoBadge, 8); Stroke(logoBadge, nil, 1.5, "ACCENT2")
+reg(logoBadge, "BackgroundColor3", "ACCENTS")
+local logoTxt = Instance.new("TextLabel", logoBadge)
+logoTxt.Size = UDim2.fromScale(1, 1); logoTxt.BackgroundTransparency = 1
+logoTxt.Font = Enum.Font.GothamBold; logoTxt.Text = "RG"
+logoTxt.TextColor3 = M.ACCENT; logoTxt.TextSize = 13; logoTxt.ZIndex = 13
+reg(logoTxt, "TextColor3", "ACCENT")
+
+local hdrTitle = Instance.new("TextLabel", Hdr)
+hdrTitle.BackgroundTransparency = 1; hdrTitle.Position = UDim2.new(0, 52, 0, 8)
+hdrTitle.Size = UDim2.new(1, -190, 0, 20); hdrTitle.Font = Enum.Font.GothamBold
+hdrTitle.Text = CONFIG.Name; hdrTitle.TextColor3 = M.ACCENT; hdrTitle.TextSize = 14
+hdrTitle.TextXAlignment = Enum.TextXAlignment.Left
+hdrTitle.TextTruncate = Enum.TextTruncate.AtEnd; hdrTitle.ZIndex = 12
+reg(hdrTitle, "TextColor3", "ACCENT")
+
+local hdrSub = Instance.new("TextLabel", Hdr)
+hdrSub.BackgroundTransparency = 1; hdrSub.Position = UDim2.new(0, 52, 0, 30)
+hdrSub.Size = UDim2.new(1, -190, 0, 14); hdrSub.Font = Enum.Font.Gotham
+hdrSub.TextColor3 = M.ACCENT2; hdrSub.TextSize = 10
+hdrSub.TextXAlignment = Enum.TextXAlignment.Left
+hdrSub.TextTruncate = Enum.TextTruncate.AtEnd; hdrSub.ZIndex = 12
+reg(hdrSub, "TextColor3", "ACCENT2")
+
+local hdrBaseText = "v4.1  ·  AEGIS R2  ·  " .. CONFIG.Owner
+task.spawn(function()
+    local b = true
+    while hdrSub.Parent do
+        hdrSub.Text = hdrBaseText .. (b and " |" or "  ")
+        b = not b
+        task.wait(0.55)
+    end
+end)
+
+local discBtn = Instance.new("TextButton", Hdr)
+discBtn.Size = UDim2.new(0, 66, 0, 24); discBtn.Position = UDim2.new(1, -96, 0.5, -12)
+discBtn.BackgroundColor3 = Color3.fromRGB(45, 65, 195); discBtn.BorderSizePixel = 0
+discBtn.Font = Enum.Font.GothamBold; discBtn.Text = "Discord"
+discBtn.TextColor3 = M.WHITE; discBtn.TextSize = 10; discBtn.ZIndex = 12; Corner(discBtn, 6)
+discBtn.MouseButton1Click:Connect(function()
+    clipboard(CONFIG.Discord)
+    Notify("Enlace de Discord copiado", M.CYAN)
+end)
+
+local closeBtn = Instance.new("TextButton", Hdr)
+closeBtn.Size = UDim2.new(0, 28, 0, 28); closeBtn.Position = UDim2.new(1, -36, 0.5, -14)
+closeBtn.BackgroundColor3 = M.ACCENTS; closeBtn.BorderSizePixel = 0
+closeBtn.Font = Enum.Font.GothamBold; closeBtn.Text = "×"
+closeBtn.TextColor3 = M.GRAY; closeBtn.TextSize = 18; closeBtn.ZIndex = 12; Corner(closeBtn, 7)
+reg(closeBtn, "BackgroundColor3", "ACCENTS")
+closeBtn.MouseButton1Click:Connect(function()
+    MF.Visible = false; shadow.Visible = false
+    hubVisible = false
+    Notify("Hub cerrado — presiona [R] para abrir", M.GRAY)
+end)
+closeBtn.MouseEnter:Connect(function() tw(closeBtn, { BackgroundColor3 = M.REDSFT, TextColor3 = M.WHITE }, 0.1) end)
+closeBtn.MouseLeave:Connect(function() tw(closeBtn, { BackgroundColor3 = M.ACCENTS, TextColor3 = M.GRAY }, 0.1) end)
+
+-- ══════════════════════════════════════
+--  FRAMEWORK DE PESTAÑAS
+-- ══════════════════════════════════════
+local tabDefs = {}      -- { {id, name, icon, build} }
+local tabBtns, tabFrames = {}, {}
+local curTab = 0
+local loIdx = {}
+
+local function addTabDef(id, name, icon, build)
+    tabDefs[#tabDefs + 1] = { id = id, name = name, icon = icon, build = build }
+end
+
+local tabBar = Instance.new("Frame", MF)
+tabBar.Size = UDim2.new(1, -12, 0, 30); tabBar.Position = UDim2.new(0, 6, 0, 60)
+tabBar.BackgroundColor3 = M.BG3; tabBar.BorderSizePixel = 0; tabBar.ZIndex = 11
+Corner(tabBar, 8)
+reg(tabBar, "BackgroundColor3", "BG3")
+
+local tabScroll = Instance.new("ScrollingFrame", tabBar)
+tabScroll.Size = UDim2.fromScale(1, 1); tabScroll.BackgroundTransparency = 1
+tabScroll.BorderSizePixel = 0; tabScroll.ScrollBarThickness = 0
+tabScroll.ScrollingDirection = Enum.ScrollingDirection.X
+tabScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+tabScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
+tabScroll.ZIndex = 12
+local tabLL = Instance.new("UIListLayout", tabScroll)
+tabLL.FillDirection = Enum.FillDirection.Horizontal; tabLL.Padding = UDim.new(0, 3)
+local tabPad = Instance.new("UIPadding", tabScroll)
+tabPad.PaddingLeft = UDim.new(0, 3); tabPad.PaddingTop = UDim.new(0, 3)
+tabPad.PaddingBottom = UDim.new(0, 3)
+
+local function selectTab(i)
+    curTab = i
+    for j = 1, #tabDefs do
+        local on = (j == i)
+        tabFrames[j].Visible = on
+        tw(tabBtns[j], {
+            BackgroundColor3 = on and M.ACCENTD or M.BG3,
+            BackgroundTransparency = on and 0 or 1,
+            TextColor3 = on and M.ACCENT or M.GRAY,
+        }, 0.14)
+        local s = tabBtns[j]:FindFirstChildOfClass("UIStroke")
+        if on then
+            if not s then Stroke(tabBtns[j], nil, 1, "ACCENT2") end
+        else
+            if s then s:Destroy() end
+        end
+    end
+end
+
+local function buildTabsUI()
+    loIdx = {}
+    for i = 1, #tabDefs do loIdx[i] = 0 end
+    for i, def in ipairs(tabDefs) do
+        local tb = Instance.new("TextButton", tabScroll)
+        tb.Size = UDim2.new(0, 64, 1, 0)
+        tb.BackgroundColor3 = M.BG3
+        tb.BackgroundTransparency = (i == 1) and 0 or 1
+        tb.BorderSizePixel = 0
+        tb.Font = Enum.Font.GothamBold
+        tb.Text = def.icon .. " " .. def.name
+        tb.TextSize = 9
+        tb.TextColor3 = (i == 1) and M.ACCENT or M.GRAY
+        tb.ZIndex = 13
+        tb.TextTruncate = Enum.TextTruncate.AtEnd
+        Corner(tb, 6)
+        if i == 1 then Stroke(tb, nil, 1, "ACCENT2") end
+        tb.MouseButton1Click:Connect(function() selectTab(i) end)
+        tabBtns[i] = tb
+
+        local cf = Instance.new("ScrollingFrame", MF)
+        cf.Size = UDim2.new(1, -10, 1, -96); cf.Position = UDim2.new(0, 5, 0, 94)
+        cf.BackgroundTransparency = 1; cf.BorderSizePixel = 0
+        cf.ScrollBarThickness = 3; cf.ScrollBarImageColor3 = M.ACCENT2
+        cf.CanvasSize = UDim2.new(0, 0, 0, 0); cf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        cf.ScrollingDirection = Enum.ScrollingDirection.Y
+        cf.Visible = (i == 1); cf.ZIndex = 11
+        local ll = Instance.new("UIListLayout", cf)
+        ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0, 5)
+        local pad = Instance.new("UIPadding", cf)
+        pad.PaddingTop = UDim.new(0, 5); pad.PaddingBottom = UDim.new(0, 12)
+        pad.PaddingLeft = UDim.new(0, 2); pad.PaddingRight = UDim.new(0, 6)
+        tabFrames[i] = cf
+    end
+    selectTab(1)
+end
+
+local function nextLO(ti)
+    loIdx[ti] = loIdx[ti] + 1
+    return loIdx[ti]
+end
+
+-- ══════════════════════════════════════
+--  WIDGETS (todos registrados al motor de temas)
+-- ══════════════════════════════════════
+-- (ThemeFns y regFn viven arriba, junto al motor de temas — V4.1)
+
+local function mkSection(ti, label)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 22); f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti)
+    local l = Instance.new("TextLabel", f)
+    l.Size = UDim2.new(1, -8, 1, 0); l.Position = UDim2.new(0, 4, 0, 0)
+    l.BackgroundTransparency = 1; l.Font = Enum.Font.GothamBold
+    l.Text = label:upper(); l.TextColor3 = M.ACCENT2; l.TextSize = 9
+    l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 12
+    reg(l, "TextColor3", "ACCENT2")
+    local line = Instance.new("Frame", f)
+    line.Size = UDim2.new(1, -4, 0, 1); line.Position = UDim2.new(0, 4, 1, -1)
+    line.BackgroundColor3 = M.ACCENTD; line.BorderSizePixel = 0; line.ZIndex = 12
+    reg(line, "BackgroundColor3", "ACCENTD")
+end
+
+local function mkBtn(ti, label, col, callback)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 36); f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti)
+    local b = Instance.new("TextButton", f)
+    b.Size = UDim2.fromScale(1, 1)
+    b.BackgroundColor3 = col or M.BG3
+    b.BorderSizePixel = 0; b.Font = Enum.Font.GothamBold
+    b.Text = "  " .. label; b.TextColor3 = M.GRAYLT; b.TextSize = 11
+    b.TextXAlignment = Enum.TextXAlignment.Left; b.ZIndex = 12
+    Corner(b, 8); Stroke(b, nil, 1, "ACCENTD")
+    if not col then reg(b, "BackgroundColor3", "BG3") end
+    local accent = Instance.new("Frame", b)
+    accent.Size = UDim2.new(0, 3, 0.6, 0); accent.Position = UDim2.new(0, 0, 0.2, 0)
+    accent.BackgroundColor3 = col or M.ACCENT2; accent.BorderSizePixel = 0
+    accent.ZIndex = 13; Corner(accent, 2)
+    if not col then reg(accent, "BackgroundColor3", "ACCENT2") end
+    b.MouseEnter:Connect(function() tw(b, { BackgroundColor3 = M.BG4, TextColor3 = M.ACCENT }, 0.1) end)
+    b.MouseLeave:Connect(function() tw(b, { BackgroundColor3 = col or M.BG3, TextColor3 = M.GRAYLT }, 0.1) end)
+    b.MouseButton1Click:Connect(function()
+        tw(b, { BackgroundColor3 = M.ACCENTS }, 0.06)
+        task.delay(0.14, function() tw(b, { BackgroundColor3 = col or M.BG3 }, 0.14) end)
+        if callback then task.spawn(pcall, callback) end
+    end)
+    return b
+end
+
+local function mkBtnRow(ti, items)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 36); f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti)
+    -- V4.1: botones fluidos (porcentuales) — se reacomodan en cualquier ancho
+    local n = #items; local gap = 4
+    local ll = Instance.new("UIListLayout", f)
+    ll.FillDirection = Enum.FillDirection.Horizontal
+    ll.Padding = UDim.new(0, gap)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder
+    for i2, item in ipairs(items) do
+        local b = Instance.new("TextButton", f)
+        b.Size = UDim2.new(1 / n, -(gap * (n - 1)) / n, 1, 0)
+        b.LayoutOrder = i2
+        b.BackgroundColor3 = item.color or M.BG3; b.BorderSizePixel = 0
+        b.Font = Enum.Font.GothamBold; b.Text = item.label
+        b.TextColor3 = M.GRAYLT; b.TextSize = 10; b.ZIndex = 12
+        b.TextTruncate = Enum.TextTruncate.AtEnd
+        Corner(b, 8); Stroke(b, nil, 1, "ACCENTD")
+        if not item.color then reg(b, "BackgroundColor3", "BG3") end
+        b.MouseEnter:Connect(function() tw(b, { BackgroundColor3 = M.BG4, TextColor3 = M.ACCENT }, 0.1) end)
+        b.MouseLeave:Connect(function() tw(b, { BackgroundColor3 = item.color or M.BG3, TextColor3 = M.GRAYLT }, 0.1) end)
+        b.MouseButton1Click:Connect(function()
+            tw(b, { BackgroundColor3 = M.ACCENTS }, 0.06)
+            task.delay(0.14, function() tw(b, { BackgroundColor3 = item.color or M.BG3 }, 0.14) end)
+            if item.cb then task.spawn(pcall, item.cb) end
+        end)
+    end
+end
+
+local function mkToggle(ti, label, defVal, callback)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 38); f.BackgroundColor3 = M.BG3
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti); f.ZIndex = 12
+    Corner(f, 8); Stroke(f, nil, 1, "ACCENTD")
+    reg(f, "BackgroundColor3", "BG3")
+
+    local lbl = Instance.new("TextLabel", f)
+    lbl.BackgroundTransparency = 1; lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.Size = UDim2.new(1, -62, 1, 0); lbl.Font = Enum.Font.GothamBold
+    lbl.Text = label; lbl.TextColor3 = M.GRAY; lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd; lbl.ZIndex = 13
+    reg(lbl, "TextColor3", "GRAY")
+
+    local pill = Instance.new("Frame", f)
+    pill.Size = UDim2.new(0, 38, 0, 20); pill.Position = UDim2.new(1, -46, 0.5, -10)
+    pill.BackgroundColor3 = M.BG2; pill.BorderSizePixel = 0; pill.ZIndex = 13
+    Corner(pill, 100)
+    reg(pill, "BackgroundColor3", "BG2")
+    local pillStroke = Stroke(pill, nil, 1, "ACCENTD")
+
+    local dot = Instance.new("Frame", pill)
+    dot.Size = UDim2.new(0, 14, 0, 14); dot.Position = UDim2.new(0, 3, 0.5, -7)
+    dot.BackgroundColor3 = M.GRAY; dot.BorderSizePixel = 0; dot.ZIndex = 14; Corner(dot, 100)
+
+    local isOn = defVal or false
+    local function setVisual(on)
+        if on then
+            tw(pill, { BackgroundColor3 = M.ACCENTD }, 0.16)
+            tw(dot, { Position = UDim2.new(1, -17, 0.5, -7), BackgroundColor3 = M.ACCENT }, 0.16)
+            tw(lbl, { TextColor3 = M.ACCENTHI }, 0.16)
+            tw(pillStroke, { Color = M.ACCENT }, 0.16)
+        else
+            tw(pill, { BackgroundColor3 = M.BG2 }, 0.16)
+            tw(dot, { Position = UDim2.new(0, 3, 0.5, -7), BackgroundColor3 = M.GRAY }, 0.16)
+            tw(lbl, { TextColor3 = M.GRAY }, 0.16)
+            tw(pillStroke, { Color = M.ACCENTD }, 0.16)
+        end
+    end
+    setVisual(isOn)
+    regFn(function() setVisual(isOn) end)
+
+    local function doToggle()
+        isOn = not isOn
+        setVisual(isOn)
+        if callback then task.spawn(pcall, callback, isOn) end
+    end
+    f.MouseEnter:Connect(function() if not isOn then tw(f, { BackgroundColor3 = M.BG4 }, 0.1) end end)
+    f.MouseLeave:Connect(function() if not isOn then tw(f, { BackgroundColor3 = M.BG3 }, 0.1) end end)
+    local hit = Instance.new("TextButton", f)
+    hit.Size = UDim2.fromScale(1, 1)
+    hit.BackgroundTransparency = 1; hit.Text = ""; hit.ZIndex = 15
+    hit.MouseButton1Click:Connect(doToggle)
+
+    return { setOn = function(v) isOn = v; setVisual(v) end, get = function() return isOn end }
+end
+
+local function mkSlider(ti, label, minV, maxV, defV, callback, decimals)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 52); f.BackgroundColor3 = M.BG3
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti); f.ZIndex = 12
+    Corner(f, 8); Stroke(f, nil, 1, "ACCENTD")
+    reg(f, "BackgroundColor3", "BG3")
+
+    local fmt = decimals and ("%." .. decimals .. "f") or ("%d")
+    local lbl = Instance.new("TextLabel", f)
+    lbl.BackgroundTransparency = 1; lbl.Position = UDim2.new(0, 12, 0, 6)
+    lbl.Size = UDim2.new(1, -16, 0, 18); lbl.Font = Enum.Font.GothamBold
+    lbl.Text = label .. ":  " .. fmt:format(defV); lbl.TextColor3 = M.ACCENT2; lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 13
+    reg(lbl, "TextColor3", "ACCENT2")
+
+    local trackBg = Instance.new("Frame", f)
+    trackBg.Size = UDim2.new(1, -24, 0, 6); trackBg.Position = UDim2.new(0, 12, 0, 34)
+    trackBg.BackgroundColor3 = M.ACCENTS; trackBg.BorderSizePixel = 0; trackBg.ZIndex = 13
+    Corner(trackBg, 100)
+    reg(trackBg, "BackgroundColor3", "ACCENTS")
+
+    local fill = Instance.new("Frame", trackBg)
+    fill.Size = UDim2.new((defV - minV) / (maxV - minV), 0, 1, 0)
+    fill.BackgroundColor3 = M.ACCENT2; fill.BorderSizePixel = 0; fill.ZIndex = 14; Corner(fill, 100)
+    reg(fill, "BackgroundColor3", "ACCENT2")
+
+    local handle = Instance.new("TextButton", trackBg)
+    handle.Size = UDim2.new(0, 16, 0, 16)
+    handle.Position = UDim2.new((defV - minV) / (maxV - minV), -8, 0.5, -8)
+    handle.BackgroundColor3 = M.ACCENT; handle.BorderSizePixel = 0
+    handle.Text = ""; handle.ZIndex = 15
+    Corner(handle, 100); Stroke(handle, nil, 2, "BG")
+    reg(handle, "BackgroundColor3", "ACCENT")
+
+    local draggingSlider = false
+    local function setVal(screenX)
+        local w = trackBg.AbsoluteSize.X
+        if w <= 0 then return end
+        local ratio = math.clamp((screenX - trackBg.AbsolutePosition.X) / w, 0, 1)
+        local v = minV + (maxV - minV) * ratio
+        v = decimals and (math.floor(v * (10 ^ decimals)) / (10 ^ decimals)) or math.floor(v)
+        fill.Size = UDim2.new(ratio, 0, 1, 0)
+        handle.Position = UDim2.new(ratio, -8, 0.5, -8)
+        lbl.Text = label .. ":  " .. fmt:format(v)
+        if callback then callback(v) end
+    end
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingSlider = true
+        end
+    end)
+    trackBg.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingSlider = true
+            setVal(i.Position.X)
+        end
+    end)
+    addConn(UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingSlider = false
+        end
+    end))
+    addConn(UIS.InputChanged:Connect(function(i)
+        if draggingSlider and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+            setVal(i.Position.X)
+        end
+    end))
+end
+
+local function mkCard(ti, title, body, col)
+    col = col or M.ACCENT2
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 46); f.BackgroundColor3 = M.CARD
+    f.AutomaticSize = Enum.AutomaticSize.Y -- V4.1: crece según el texto en pantallas angostas
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti); f.ZIndex = 12
+    Corner(f, 8); Stroke(f, col, 1)
+    reg(f, "BackgroundColor3", "CARD")
+    local bar = Instance.new("Frame", f)
+    bar.BackgroundColor3 = col; bar.BorderSizePixel = 0
+    bar.Position = UDim2.new(0, 5, 0, 6); bar.Size = UDim2.new(0, 2, 1, -12)
+    bar.ZIndex = 13; Corner(bar, 2)
+    local tl = Instance.new("TextLabel", f)
+    tl.BackgroundTransparency = 1; tl.Position = UDim2.new(0, 14, 0, 6)
+    tl.Size = UDim2.new(1, -18, 0, 16); tl.Font = Enum.Font.GothamBold
+    tl.Text = title; tl.TextColor3 = col; tl.TextSize = 11
+    tl.TextXAlignment = Enum.TextXAlignment.Left; tl.ZIndex = 13
+    local bl = Instance.new("TextLabel", f)
+    bl.BackgroundTransparency = 1; bl.Position = UDim2.new(0, 14, 0, 24)
+    bl.Size = UDim2.new(1, -26, 0, 12); bl.AutomaticSize = Enum.AutomaticSize.Y
+    bl.Font = Enum.Font.Gotham
+    bl.Text = body; bl.TextColor3 = M.GRAY; bl.TextSize = 10
+    bl.TextXAlignment = Enum.TextXAlignment.Left; bl.TextWrapped = true; bl.ZIndex = 13
+    reg(bl, "TextColor3", "GRAY")
+    local fpad = Instance.new("UIPadding", f)
+    fpad.PaddingBottom = UDim.new(0, 8)
+end
+
+local function mkLabel(ti, txt, col)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 18); f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti)
+    local l = Instance.new("TextLabel", f)
+    l.Size = UDim2.new(1, -8, 1, 0); l.Position = UDim2.new(0, 4, 0, 0)
+    l.BackgroundTransparency = 1; l.Font = Enum.Font.Gotham
+    l.Text = txt; l.TextColor3 = col or M.GRAY; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 12
+    if not col then reg(l, "TextColor3", "GRAY") end
+    return l
+end
+
+-- fila etiqueta:valor con botón copiar opcional; devuelve {frame, set}
+local function mkValueRow(ti, label, getVal, copyable)
+    local f = Instance.new("Frame", tabFrames[ti])
+    f.Size = UDim2.new(1, 0, 0, 32); f.BackgroundColor3 = M.BG3
+    f.BorderSizePixel = 0; f.LayoutOrder = nextLO(ti); f.ZIndex = 12
+    Corner(f, 8); Stroke(f, nil, 1, "ACCENTD")
+    reg(f, "BackgroundColor3", "BG3")
+    local l = Instance.new("TextLabel", f)
+    l.Size = UDim2.new(0.36, -10, 1, 0); l.Position = UDim2.new(0, 10, 0, 0)
+    l.BackgroundTransparency = 1; l.Font = Enum.Font.GothamBold
+    l.Text = label; l.TextColor3 = M.GRAY; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 13
+    reg(l, "TextColor3", "GRAY")
+    local v = Instance.new("TextLabel", f)
+    v.Size = copyable and UDim2.new(0.64, -44, 1, 0) or UDim2.new(0.64, -20, 1, 0)
+    v.Position = UDim2.new(0.36, 6, 0, 0)
+    v.BackgroundTransparency = 1; v.Font = Enum.Font.Gotham
+    v.Text = tostring(getVal and getVal() or "-"); v.TextColor3 = M.GRAYLT; v.TextSize = 10
+    v.TextXAlignment = Enum.TextXAlignment.Left; v.TextTruncate = Enum.TextTruncate.AtEnd; v.ZIndex = 13
+    local setter = function(txt) v.Text = tostring(txt) end
+    if copyable then
+        local cb = Instance.new("TextButton", f)
+        cb.Size = UDim2.new(0, 24, 0, 22); cb.Position = UDim2.new(1, -30, 0.5, -11)
+        cb.BackgroundColor3 = M.ACCENTS; cb.BorderSizePixel = 0
+        cb.Font = Enum.Font.GothamBold; cb.Text = "⧉"
+        cb.TextColor3 = M.ACCENT; cb.TextSize = 12; cb.ZIndex = 14; Corner(cb, 6)
+        reg(cb, "BackgroundColor3", "ACCENTS")
+        reg(cb, "TextColor3", "ACCENT")
+        cb.MouseButton1Click:Connect(function()
+            clipboard(tostring(getVal and getVal() or ""))
+            Notify("Copiado: " .. tostring(getVal and getVal() or ""), M.CYAN, 2.5)
+        end)
+    end
+    return { frame = f, set = setter }
+end
+
+-- ══════════════════════════════════════
+--  GUARD — cliente del Cloudflare Worker
+--  Nunca viajan secretos desde el cliente: solo IDs públicos + hash de key.
+-- ══════════════════════════════════════
+local Guard = {}
+Guard.session = string.format("%08x%08x", math.random(0, 2147483647), math.random(0, 2147483647))
+Guard.lastT = 0
+Guard.lastRes = nil
+
+local function guardURL(path)
+    return (CONFIG.WorkerURL:gsub("/+$", "")) .. path
+end
+
+function Guard.verifySig(x, u, banned, keyvalid, role, s)
+    if not WORKER_SECRET or WORKER_SECRET == "" then return true end -- sin secreto configurado no se valida
+    local expect = digest(x .. "|" .. u .. "|" .. (banned and "1" or "0") .. "|" ..
+        (keyvalid and "1" or "0") .. "|" .. tostring(role) .. "|" .. WORKER_SECRET)
+    return string.lower(tostring(s or "")) == expect
+end
+
+function Guard.check(keyHash, force)
+    local now = os.clock()
+    if not force and Guard.lastRes and (now - Guard.lastT) < 3 then
+        return Guard.lastRes
+    end
+    Guard.lastT = now
+    if not CONFIG.WorkerURL:find("https://", 1, true) or CONFIG.WorkerURL:find("TU%-SUBDOMINIO", 1, false) then
+        return nil, "WorkerURL sin configurar"
+    end
+    local t0 = os.clock()
+    local q = "?u=" .. tostring(lp.UserId) ..
+        "&n=" .. HttpSvc:UrlEncode(lp.Name:lower()) ..
+        "&x=" .. Guard.session ..
+        "&h=" .. HttpSvc:UrlEncode(getHwid()) ..
+        "&f=" .. (force and "1" or "0")
+    if keyHash then q = q .. "&k=" .. keyHash end
+
+    local res = nil
+    for attempt = 1, (CONFIG.RequestRetry + 1) do
+        local r = httpReq({ Url = guardURL("/check" .. q), Method = "GET" })
+        if r and r.StatusCode == 200 and r.Body then
+            local body = jdec(r.Body)
+            if body and body.ok then res = body; break end
+        end
+        if attempt <= CONFIG.RequestRetry then task.wait(0.6) end
+    end
+
+    if res then
+        res.latency = math.floor((os.clock() - t0) * 1000)
+        res.sigOK = Guard.verifySig(Guard.session, tostring(lp.UserId),
+            res.banned == true, res.keyvalid == true, res.role, res.s)
+        res.t = os.time()
+        Guard.lastRes = res
+        Auth.lastRes = res
+        return res
+    end
+    return nil, "sin respuesta del Guard"
+end
+
+function Guard.admin(path, body)
+    if not Auth.ownerKey or Auth.ownerKey == "" then return nil, "sin Owner Key (ingrésala arriba)" end
+    local r = httpReq({
+        Url = guardURL(path),
+        Method = "POST",
+        Headers = {
+            ["content-type"] = "application/json",
+            ["X-Owner-Id"] = tostring(lp.UserId),
+            ["X-Owner-Key"] = Auth.ownerKey,
+        },
+        Body = jenc(body or {}),
+    })
+    if r and r.Body then
+        local b = jdec(r.Body)
+        if b then
+            if b.error then
+                return nil, tostring(b.error) .. (b.why and (" (" .. tostring(b.why) .. ")") or "")
+            end
+            return b
+        end
+    end
+    return nil, "sin respuesta del Worker"
+end
+
+function Guard.log(title, desc, fields, color)
+    task.spawn(function()
+        pcall(function()
+            httpReq({
+                Url = guardURL("/log"),
+                Method = "POST",
+                Headers = { ["content-type"] = "application/json" },
+                Body = jenc({ title = title, desc = desc, fields = fields, color = color }),
+            })
+        end)
+    end)
+end
+
+function Guard.sendProfile()
+    task.spawn(function()
+        pcall(function()
+            httpReq({
+                Url = guardURL("/profile"),
+                Method = "POST",
+                Headers = { ["content-type"] = "application/json" },
+                Body = jenc({
+                    u = tostring(lp.UserId),
+                    n = lp.Name,
+                    d = lp.DisplayName,
+                    e = executorName(),
+                    p = tostring(game.PlaceId),
+                }),
+            })
+        end)
+    end)
+end
+
+function Guard.diag()
+    local headers = {
+        ["X-Owner-Id"] = tostring(lp.UserId),
+        ["X-Owner-Key"] = Auth.ownerKey or "",
+    }
+    local r = httpReq({ Url = guardURL("/diag?u=" .. tostring(lp.UserId)), Method = "GET", Headers = headers })
+    if r and r.Body then return jdec(r.Body) end
+    return nil
+end
+
+-- ══════════════════════════════════════
+--  AUTENTICACIÓN — hash de key guardado / baneo / key screen
+-- ══════════════════════════════════════
+local function loadSavedKeyHash()
+    local s = fileRead(CONFIG.KeyFile)
+    if s then
+        s = s:gsub("%s", "")
+        if #s == 16 and s:match("^%x+$") then return s end
+    end
+    return nil
+end
+Auth.keyHash = loadSavedKeyHash()
+
+local function banScreen(reason)
+    Auth.banned = true
+    hideLoaderNow() -- FIX V4.1: cierra el loader para que no se monte detrás
+    local ov = Instance.new("Frame", SGO)
+    ov.Size = UDim2.fromScale(1, 1)
+    ov.BackgroundColor3 = Color3.fromRGB(16, 4, 4)
+    ov.BorderSizePixel = 0
+    ov.ZIndex = 700
+    Gradient(ov, "REDSFT", "BG", 115)
+
+    -- Tarjeta centrada (V4.1): todo apilado en lista, nada se solapa
+    -- aunque la pantalla sea pequeña. Se encoge solita si hace falta.
+    local card = Instance.new("Frame", ov)
+    card.AnchorPoint = Vector2.new(0.5, 0.5)
+    card.Position = UDim2.new(0.5, 0, 0.5, 0)
+    card.Size = UDim2.new(0, 404, 0, 448)
+    card.BackgroundColor3 = M.BG
+    card.BorderSizePixel = 0
+    card.ZIndex = 701
+    Corner(card, 16)
+    Stroke(card, M.REDSFT, 1.5)
+    Gradient(card, "BG2", "BG", 135)
+
+    local fit = Instance.new("UIScale", card)
+    do
+        local c = cam()
+        local v = c and c.ViewportSize or Vector2.new(1280, 720)
+        fit.Scale = math.clamp(math.min((v.X - 18) / 404, (v.Y - 18) / 448), 0.55, 1)
+    end
+
+    local ll = Instance.new("UIListLayout", card)
+    ll.FillDirection = Enum.FillDirection.Vertical
+    ll.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    ll.VerticalAlignment = Enum.VerticalAlignment.Center
+    ll.Padding = UDim.new(0, 9)
+    local pad = Instance.new("UIPadding", card)
+    pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
+    pad.PaddingTop = UDim.new(0, 10); pad.PaddingBottom = UDim.new(0, 10)
+
+    local t1 = Instance.new("TextLabel", card)
+    t1.Size = UDim2.new(1, 0, 0, 30); t1.BackgroundTransparency = 1
+    t1.Font = Enum.Font.GothamBold; t1.Text = "⛔  ACCESO DENEGADO"
+    t1.TextColor3 = M.RED; t1.TextSize = 22; t1.ZIndex = 702
+
+    local t2 = Instance.new("TextLabel", card)
+    t2.Size = UDim2.new(1, 0, 0, 32); t2.BackgroundTransparency = 1
+    t2.Font = Enum.Font.Gotham
+    t2.Text = "Tu cuenta está baneada de " .. CONFIG.Name .. "."
+    t2.TextColor3 = M.GRAYLT; t2.TextSize = 12; t2.TextWrapped = true; t2.ZIndex = 702
+
+    -- Motivo en su propia cajita
+    local rc = Instance.new("Frame", card)
+    rc.Size = UDim2.new(1, 0, 0, 62); rc.BackgroundColor3 = M.BG2
+    rc.BorderSizePixel = 0; rc.ZIndex = 702; Corner(rc, 10)
+    Stroke(rc, M.REDSFT, 1)
+    reg(rc, "BackgroundColor3", "BG2")
+    local rl = Instance.new("TextLabel", rc)
+    rl.Size = UDim2.new(1, -20, 0, 13); rl.Position = UDim2.new(0, 10, 0, 7)
+    rl.BackgroundTransparency = 1; rl.Font = Enum.Font.GothamBold
+    rl.Text = "MOTIVO"; rl.TextColor3 = M.RED; rl.TextSize = 9
+    rl.TextXAlignment = Enum.TextXAlignment.Left; rl.ZIndex = 703
+    local rv = Instance.new("TextLabel", rc)
+    rv.Size = UDim2.new(1, -20, 1, -22); rv.Position = UDim2.new(0, 10, 0, 21)
+    rv.BackgroundTransparency = 1; rv.Font = Enum.Font.Gotham
+    rv.Text = tostring(reason or "No especificado")
+    rv.TextColor3 = M.GRAYLT; rv.TextSize = 12; rv.TextWrapped = true
+    rv.TextXAlignment = Enum.TextXAlignment.Left; rv.ZIndex = 703
+
+    -- Usuario con su avatar
+    local uc = Instance.new("Frame", card)
+    uc.Size = UDim2.new(1, 0, 0, 54); uc.BackgroundColor3 = M.BG3
+    uc.BorderSizePixel = 0; uc.ZIndex = 702; Corner(uc, 10)
+    reg(uc, "BackgroundColor3", "BG3")
+    local uav = Instance.new("ImageLabel", uc)
+    uav.Size = UDim2.new(0, 38, 0, 38); uav.Position = UDim2.new(0, 9, 0.5, -19)
+    uav.BackgroundTransparency = 1; uav.ZIndex = 703
+    uav.Image = "rbxthumb://type=AvatarHeadShot&id=" .. lp.UserId .. "&w=100&h=100"
+    Corner(uav, 19)
+    local unl = Instance.new("TextLabel", uc)
+    unl.Size = UDim2.new(1, -66, 0, 16); unl.Position = UDim2.new(0, 54, 0, 9)
+    unl.BackgroundTransparency = 1; unl.Font = Enum.Font.GothamBold
+    unl.Text = "@" .. lp.Name; unl.TextColor3 = M.WHITE; unl.TextSize = 13
+    unl.TextXAlignment = Enum.TextXAlignment.Left; unl.ZIndex = 703
+    local uid = Instance.new("TextLabel", uc)
+    uid.Size = UDim2.new(1, -66, 0, 14); uid.Position = UDim2.new(0, 54, 0, 28)
+    uid.BackgroundTransparency = 1; uid.Font = Enum.Font.Gotham
+    uid.Text = "UserID: " .. lp.UserId .. "  ·  v" .. CONFIG.Version
+    uid.TextColor3 = M.GRAY; uid.TextSize = 10
+    uid.TextXAlignment = Enum.TextXAlignment.Left; uid.ZIndex = 703
+
+    local ap = Instance.new("TextButton", card)
+    ap.Size = UDim2.new(1, 0, 0, 44); ap.BackgroundColor3 = Color3.fromRGB(45, 65, 195)
+    ap.BorderSizePixel = 0; ap.Font = Enum.Font.GothamBold
+    ap.Text = "💬 COPIAR DISCORD PARA APELAR"
+    ap.TextColor3 = M.WHITE; ap.TextSize = 12; ap.ZIndex = 702; Corner(ap, 10)
+    ap.MouseButton1Click:Connect(function()
+        clipboard(CONFIG.Discord)
+        Notify("Discord copiado", M.CYAN)
+    end)
+
+    local cl = Instance.new("TextButton", card)
+    cl.Size = UDim2.new(1, 0, 0, 42); cl.BackgroundColor3 = M.REDSFT
+    cl.BorderSizePixel = 0; cl.Font = Enum.Font.GothamBold
+    cl.Text = "CERRAR EL HUB"; cl.TextColor3 = M.WHITE; cl.TextSize = 12
+    cl.ZIndex = 702; Corner(cl, 10)
+    cl.MouseButton1Click:Connect(function()
+        if _G.RGH_V4 and _G.RGH_V4.Destroy then pcall(_G.RGH_V4.Destroy) end
+    end)
+
+    local ft = Instance.new("TextLabel", card)
+    ft.Size = UDim2.new(1, 0, 0, 13); ft.BackgroundTransparency = 1
+    ft.Font = Enum.Font.Gotham
+    ft.Text = CONFIG.Name .. "  ·  " .. CONFIG.Discord:gsub("https://", "")
+    ft.TextColor3 = M.GRAY; ft.TextSize = 9; ft.ZIndex = 702
+
+    while Auth.banned and SG.Parent do task.wait(0.5) end
+end
+
+-- Ventana de key (solo aparece si el Guard exige key o si estás offline sin hash válido)
+local function keyScreen(online)
+    setLoad(0.2, online and "El Guard exige una key registrada..." or "Modo offline — se requiere key legacy...")
+    local keyPassed = false
+
+    local overlay = Instance.new("Frame", SGO)
+    overlay.Size = UDim2.fromScale(1, 1)
+    overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+    overlay.BackgroundTransparency = 0.45
+    overlay.BorderSizePixel = 0
+    overlay.ZIndex = 620
+
+    -- V4.1: contenedor con auto-encogido para pantallas pequeñas
+    local kWrap = Instance.new("Frame", SGO)
+    kWrap.AnchorPoint = Vector2.new(0.5, 0.5)
+    kWrap.Position = UDim2.new(0.5, 0, 0.52, 0)
+    kWrap.Size = UDim2.new(0, 414, 0, 324)
+    kWrap.BackgroundTransparency = 1
+    kWrap.ZIndex = 621
+    local kFit = Instance.new("UIScale", kWrap)
+    do
+        local c = cam()
+        local v = c and c.ViewportSize or Vector2.new(1280, 720)
+        kFit.Scale = math.clamp(math.min((v.X - 16) / 414, (v.Y - 16) / 324), 0.55, 1)
+    end
+
+    local borderF = Instance.new("Frame", kWrap)
+    borderF.Size = UDim2.new(1, 0, 1, 0)
+    borderF.BackgroundColor3 = M.ACCENT
+    borderF.BorderSizePixel = 0
+    borderF.ZIndex = 621; Corner(borderF, 16)
+    reg(borderF, "BackgroundColor3", "ACCENT")
+    local bGrad = Instance.new("UIGradient", borderF)
+    bGrad.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   Color3.fromRGB(0, 230, 80)),
+        ColorSequenceKeypoint.new(0.33, Color3.fromRGB(40, 210, 200)),
+        ColorSequenceKeypoint.new(0.66, Color3.fromRGB(80, 230, 0)),
+        ColorSequenceKeypoint.new(1,   Color3.fromRGB(0, 230, 80)),
+    }
+    task.spawn(function()
+        local r = 0
+        while borderF.Parent do
+            r = (r + 1.4) % 360
+            bGrad.Rotation = r
+            task.wait(0.016)
+        end
+    end)
+
+    local keyCard = Instance.new("Frame", kWrap)
+    keyCard.AnchorPoint = Vector2.new(0.5, 0.5)
+    keyCard.Position = UDim2.fromScale(0.5, 0.5)
+    keyCard.Size = UDim2.new(1, -6, 1, -6)
+    keyCard.BackgroundColor3 = M.BG
+    keyCard.BorderSizePixel = 0
+    keyCard.ZIndex = 622; Corner(keyCard, 14)
+    Gradient(keyCard, "GLOW_A", "GLOW_B", 135)
+
+    local kHdr = Instance.new("Frame", keyCard)
+    kHdr.Size = UDim2.new(1, 0, 0, 64); kHdr.BackgroundColor3 = M.BG2
+    kHdr.BorderSizePixel = 0; kHdr.ZIndex = 623; Corner(kHdr, 14)
+    reg(kHdr, "BackgroundColor3", "BG2")
+    local kHdrPatch = Instance.new("Frame", kHdr)
+    kHdrPatch.Size = UDim2.new(1, 0, 0, 14); kHdrPatch.Position = UDim2.new(0, 0, 1, -14)
+    kHdrPatch.BackgroundColor3 = M.BG2; kHdrPatch.BorderSizePixel = 0; kHdrPatch.ZIndex = 623
+    reg(kHdrPatch, "BackgroundColor3", "BG2")
+
+    local kLogo = Instance.new("TextLabel", kHdr)
+    kLogo.Size = UDim2.fromScale(1, 1); kLogo.BackgroundTransparency = 1
+    kLogo.Font = Enum.Font.GothamBold; kLogo.Text = ""
+    kLogo.TextColor3 = M.ACCENT; kLogo.TextSize = 17; kLogo.ZIndex = 624
+    reg(kLogo, "TextColor3", "ACCENT")
+    task.spawn(function()
+        local full = CONFIG.Name .. "  v4.1"
+        for i = 1, #full do
+            if not kLogo.Parent then return end
+            kLogo.Text = full:sub(1, i)
+            task.wait(0.032)
+        end
+    end)
+
+    local function kLbl(y, txt, sz, col)
+        local l = Instance.new("TextLabel", keyCard)
+        l.Size = UDim2.new(1, -16, 0, 18); l.Position = UDim2.new(0, 8, 0, y)
+        l.BackgroundTransparency = 1; l.Font = Enum.Font.Gotham
+        l.Text = txt; l.TextColor3 = col or M.GRAY; l.TextSize = sz or 11
+        l.TextXAlignment = Enum.TextXAlignment.Center; l.ZIndex = 623
+        return l
+    end
+    kLbl(70, "Sistema de Autenticación " .. (online and "GUARD (en línea)" or "LOCAL (offline)"), 10, M.ACCENT2)
+    kLbl(88, "Ingresa tu key de acceso:", 12, M.ACCENTHI)
+    kLbl(106, "Las keys se piden por Discord — nunca se guardan en texto plano", 9, M.GOLD)
+
+    local iBg = Instance.new("Frame", keyCard)
+    iBg.Size = UDim2.new(1, -32, 0, 42); iBg.Position = UDim2.new(0, 16, 0, 130)
+    iBg.BackgroundColor3 = M.BG2; iBg.BorderSizePixel = 0; iBg.ZIndex = 623; Corner(iBg, 10)
+    reg(iBg, "BackgroundColor3", "BG2")
+    local iStroke = Stroke(iBg, nil, 1.5, "ACCENTD")
+
+    local iPrefix = Instance.new("TextLabel", iBg)
+    iPrefix.Size = UDim2.new(0, 24, 1, 0); iPrefix.Position = UDim2.new(0, 6, 0, 0)
+    iPrefix.BackgroundTransparency = 1; iPrefix.Font = Enum.Font.GothamBold
+    iPrefix.Text = ">"; iPrefix.TextColor3 = M.ACCENT; iPrefix.TextSize = 14; iPrefix.ZIndex = 624
+
+    local inputBox = Instance.new("TextBox", iBg)
+    inputBox.Size = UDim2.new(1, -32, 1, 0); inputBox.Position = UDim2.new(0, 24, 0, 0)
+    inputBox.BackgroundTransparency = 1; inputBox.Text = ""
+    inputBox.PlaceholderText = "escribe tu key aquí..."
+    inputBox.PlaceholderColor3 = M.ACCENTD
+    inputBox.TextColor3 = M.ACCENT; inputBox.TextSize = 13
+    inputBox.Font = Enum.Font.GothamBold; inputBox.ClearTextOnFocus = false; inputBox.ZIndex = 625
+    inputBox.Focused:Connect(function() tw(iStroke, { Color = M.ACCENT, Thickness = 2 }, 0.15) end)
+    inputBox.FocusLost:Connect(function() tw(iStroke, { Color = M.ACCENTD, Thickness = 1.5 }, 0.15) end)
+
+    local errLbl = kLbl(178, "", 10, M.RED)
+
+    local confirmBtn = Instance.new("TextButton", keyCard)
+    confirmBtn.Size = UDim2.new(1, -32, 0, 40); confirmBtn.Position = UDim2.new(0, 16, 0, 196)
+    confirmBtn.BackgroundColor3 = M.ACCENTS; confirmBtn.BorderSizePixel = 0
+    confirmBtn.Font = Enum.Font.GothamBold; confirmBtn.Text = "CONFIRMAR KEY"
+    confirmBtn.TextColor3 = M.ACCENT; confirmBtn.TextSize = 13; confirmBtn.ZIndex = 623
+    Corner(confirmBtn, 10); Stroke(confirmBtn, nil, 1.5, "ACCENT2")
+    reg(confirmBtn, "BackgroundColor3", "ACCENTS")
+    confirmBtn.MouseEnter:Connect(function() tw(confirmBtn, { BackgroundColor3 = M.ACCENTD }, 0.12) end)
+    confirmBtn.MouseLeave:Connect(function() tw(confirmBtn, { BackgroundColor3 = M.ACCENTS }, 0.12) end)
+
+    local discBtnK = Instance.new("TextButton", keyCard)
+    discBtnK.Size = UDim2.new(1, -32, 0, 28); discBtnK.Position = UDim2.new(0, 16, 0, 246)
+    discBtnK.BackgroundColor3 = Color3.fromRGB(40, 55, 185); discBtnK.BorderSizePixel = 0
+    discBtnK.Font = Enum.Font.GothamBold
+    discBtnK.Text = CONFIG.Discord:gsub("https://", "") .. " — obtener key"
+    discBtnK.TextColor3 = M.WHITE; discBtnK.TextSize = 10; discBtnK.ZIndex = 623
+    Corner(discBtnK, 8)
+    discBtnK.MouseButton1Click:Connect(function()
+        clipboard(CONFIG.Discord)
+        Notify("Discord copiado", M.CYAN)
+    end)
+
+    local function tryKey()
+        local k = inputBox.Text:gsub("%s", ""):upper()
+        if #k < 3 then
+            errLbl.Text = "Escribe tu key para continuar"
+            return
+        end
+        local h = digest(k)
+        confirmBtn.Text = "VALIDANDO..."
+        if online then
+            task.wait(2.6) -- evita el rate-limit del Guard (2.5s) tras el check de arranque
+            local res = Guard.check(h, true)
+            if res and res.banned then
+                pcall(function() overlay:Destroy() kWrap:Destroy() end)
+                banScreen(res.reason)
+                return
+            end
+            if res and res.sigOK == false then
+                errLbl.Text = "El Guard no firmó la respuesta — revisa el SECRET del Worker"
+                confirmBtn.Text = "CONFIRMAR KEY"
+                return
+            end
+            if not res then
+                errLbl.Text = "Guard sin conexión — reintenta o contacta al staff"
+                confirmBtn.Text = "CONFIRMAR KEY"
+                return
+            end
+            if res.keyvalid then
+                Auth.keyHash = h
+                Auth.role = res.role or "USER"
+                Auth.status = "ONLINE"
+                Auth.lastRes = res
+                fileWrite(CONFIG.KeyFile, h)
+                keyPassed = true
+            else
+                errLbl.Text = (res.memberBlock)
+                    and "Debes estar en el Discord del hub para entrar"
+                    or "Key no registrada en el Guard — pídela en Discord"
+                confirmBtn.Text = "CONFIRMAR KEY"
+            end
+        else
+            if LOCAL_KEYS[h] then
+                Auth.keyHash = h
+                Auth.role = "OFFLINE"
+                Auth.status = "OFFLINE"
+                fileWrite(CONFIG.KeyFile, h)
+                keyPassed = true
+            else
+                errLbl.Text = "Key incorrecta (modo offline sin Guard)"
+                confirmBtn.Text = "CONFIRMAR KEY"
+            end
+        end
+        if keyPassed then
+            confirmBtn.Text = "✓ ACCESO CONCEDIDO"
+            tw(confirmBtn, { BackgroundColor3 = M.ACCENTD }, 0.2)
+            task.wait(0.4)
+            tw(overlay, { BackgroundTransparency = 1 }, 0.3)
+            tw(keyCard, { BackgroundTransparency = 1 }, 0.3)
+            tw(borderF, { BackgroundTransparency = 1 }, 0.3)
+            task.wait(0.34)
+            pcall(function()
+                overlay:Destroy(); kWrap:Destroy()
+            end)
+        end
+    end
+
+    confirmBtn.MouseButton1Click:Connect(tryKey)
+    inputBox.FocusLost:Connect(function(enter) if enter then tryKey() end end)
+    kWrap.Position = UDim2.new(0.5, 0, 0.64, 0)
+    tw(kWrap, { Position = UDim2.new(0.5, 0, 0.52, 0) }, 0.42, Enum.EasingStyle.Back)
+
+    repeat task.wait(0.1) until keyPassed or not SG.Parent
+end
+
+-- ══════════════════════════════════════
+--  HELPERS GAMEPLAY (100% lado cliente)
+-- ══════════════════════════════════════
+local function getRoot()
+    local c = lp.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function getHum()
+    local c = lp.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function tpTo(part)
+    local r = getRoot()
+    if r and part then
+        pcall(function() r.CFrame = part.CFrame + Vector3.new(0, 4, 0) end)
+    end
+end
+local function getRooms()
+    local rf = workspace:FindFirstChild("Rooms")
+    if not rf then return {} end
+    local t = {}
+    for _, r in ipairs(rf:GetChildren()) do
+        if tonumber(r.Name) then table.insert(t, { n = tonumber(r.Name), model = r }) end
+    end
+    table.sort(t, function(a, b) return a.n < b.n end)
+    return t
+end
+local function tpSafe()
+    local rooms = workspace:FindFirstChild("Rooms")
+    if not rooms then return false end
+    for _, r in ipairs(rooms:GetChildren()) do
+        local n = r.Name:lower()
+        if n:find("safe") or n:find("clock") or n:find("church") then
+            local p = r:FindFirstChildWhichIsA("BasePart", true)
+            if p then tpTo(p); return true end
+        end
+    end
+    return false
+end
+
+-- Backup de iluminación (restauración exacta al apagar / destruir)
+local origLight = {}
+for _, prop in ipairs({ "Ambient", "Brightness", "GlobalShadows", "Technology", "FogEnd", "OutdoorAmbient" }) do
+    pcall(function() origLight[prop] = Lighting[prop] end)
+end
+local origEffectStates = {}
+for _, v in ipairs(Lighting:GetChildren()) do
+    if v:IsA("PostProcessEffect") or v:IsA("Atmosphere") then
+        pcall(function() origEffectStates[v] = v.Enabled end)
+    end
+end
+
+local function setFullbright(on)
+    state.fullbright = on
+    if on then
+        pcall(function() Lighting.Ambient = Color3.new(1, 1, 1) end)
+        pcall(function() Lighting.Brightness = 3 end)
+        pcall(function() Lighting.GlobalShadows = false end)
+        pcall(function() Lighting.Technology = Enum.Technology.Compatibility end)
+        pcall(function() Lighting.FogEnd = 9e9 end)
+        pcall(function() Lighting.OutdoorAmbient = Color3.new(1, 1, 1) end)
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostProcessEffect") or v:IsA("Atmosphere") then
+                pcall(function() v.Enabled = false end)
+            end
+        end
+        Notify("Fullbright ON", M.GOLD)
+    else
+        for k, v in pairs(origLight) do pcall(function() Lighting[k] = v end) end
+        for v, st in pairs(origEffectStates) do pcall(function() v.Enabled = st end) end
+        Notify("Fullbright OFF", M.GRAY)
+    end
+end
+
+-- Anti-Lag / FPS Booster (con throttle real y restauración)
+local antiLagBtnRef = nil
+local function applyAntiLag(enable)
+    state.antiLag = enable
+    pcall(function() settings().Network.IncomingReplicationLag = 0 end)
+    pcall(function()
+        settings().Physics.PhysicsEnvironmentalThrottle = enable
+            and Enum.EnviromentalPhysicsThrottle.Disabled
+            or Enum.EnviromentalPhysicsThrottle.DefaultAuto
+    end)
+    pcall(function() Lighting.GlobalShadows = not enable end)
+    if enable then
+        task.spawn(function()
+            local count = 0
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if not state.antiLag then break end
+                count = count + 1
+                pcall(function()
+                    if obj:IsA("BasePart") then
+                        obj.Material = Enum.Material.SmoothPlastic
+                        obj.CastShadow = false
+                    elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                        obj.Transparency = 1
+                    elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+                        obj.Enabled = false
+                    end
+                end)
+                if count % 80 == 0 then task.wait() end
+            end
+        end)
+        Notify("FPS Booster ON", M.ACCENT)
+        if antiLagBtnRef then
+            antiLagBtnRef.Text = "  ⚡ FPS Booster — ON"
+            antiLagBtnRef.TextColor3 = M.ACCENT
+        end
+    else
+        Notify("FPS Booster OFF", M.GRAY)
+        if antiLagBtnRef then
+            antiLagBtnRef.Text = "  ⚡ FPS Booster — OFF"
+            antiLagBtnRef.TextColor3 = M.GRAYLT
+        end
+    end
+end
+
+-- ══════════════════════════════════════
+--  ESP (visual, 100% cliente — reemplaza el borrado de remotes del v3)
+-- ══════════════════════════════════════
+local HL_BUDGET = 24
+local espHLList = {}
+local pespHLList = {}
+local bespHLList = {}
+
+local ENT_VISUAL = {
+    "Doppel","Pulse","Dozer","Drain","Goatman","Litany","Memory","Mime",
+    "Rue","Rush","Sorrow","Worm","Elkman","Slight","Heed","Carnation",
+    "Slugfish","Stem","Duk","Ire","Fool","Seesay","Covet","Craven",
+    "Tragedy","Snap","Kookoo","Sundial","Innego","Sinrow","Doombringer",
+    "Disgrace","Clot","Multimonster",
+}
+local COLOR_ENTIDAD = Color3.fromRGB(255, 120, 60)
+local OUTLINE_ENTIDAD = Color3.fromRGB(255, 200, 120)
+
+local function makeHighlight(adornee, fill, outline, fillT)
+    local hl = Instance.new("Highlight")
+    hl.Adornee = adornee
+    hl.FillColor = fill
+    hl.FillTransparency = fillT or 0.45
+    hl.OutlineColor = outline or fill
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = adornee
+    return hl
+end
+
+local function clearHL(list)
+    for _, h in ipairs(list) do pcall(function() h:Destroy() end) end
+    for _, v in ipairs(list) do
+        pcall(function()
+            if v.Adornee then v.Adornee:SetAttribute("RGH_ESP", nil) end
+        end)
+    end
+    return {}
+end
+
+local function espSetEntities(on)
+    state.entityESP = on
+    if not on then espHLList = clearHL(espHLList) end
+end
+local function espSetBeacons(on)
+    state.beaconESP = on
+    if not on then bespHLList = clearHL(bespHLList) end
+end
+
+local function makePlayerBillboard(hrp, playerName)
+    local bb = Instance.new("BillboardGui", hrp)
+    bb.Name = "RGH_PlayerTag"
+    bb.Size = UDim2.new(0, 140, 0, 50)
+    bb.StudsOffset = Vector3.new(0, 3.5, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 400
+    local fondo = Instance.new("Frame", bb)
+    fondo.Size = UDim2.new(1, 0, 1, 0)
+    fondo.BackgroundColor3 = Color3.fromRGB(15, 20, 15)
+    fondo.BackgroundTransparency = 0.4
+    fondo.BorderSizePixel = 0
+    fondo.ClipsDescendants = true
+    Corner(fondo, 8)
+    local nombre = Instance.new("TextLabel", fondo)
+    nombre.Size = UDim2.new(1, -10, 0.5, 0); nombre.Position = UDim2.new(0, 6, 0, 2)
+    nombre.BackgroundTransparency = 1; nombre.Font = Enum.Font.GothamBold
+    nombre.Text = playerName; nombre.TextColor3 = M.ACCENTHI
+    nombre.TextSize = 12; nombre.TextXAlignment = Enum.TextXAlignment.Left
+    local dist = Instance.new("TextLabel", fondo)
+    dist.Size = UDim2.new(0.5, 0, 0.3, 0); dist.Position = UDim2.new(0.5, 0, 0.52, 0)
+    dist.BackgroundTransparency = 1; dist.Font = Enum.Font.Gotham
+    dist.Text = "? m"; dist.TextColor3 = Color3.fromRGB(200, 200, 200)
+    dist.TextSize = 10; dist.TextXAlignment = Enum.TextXAlignment.Right
+    local barraBg = Instance.new("Frame", fondo)
+    barraBg.Size = UDim2.new(0.9, 0, 0.14, 0); barraBg.Position = UDim2.new(0.05, 0, 0.82, 0)
+    barraBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50); barraBg.BorderSizePixel = 0
+    Corner(barraBg, 4)
+    local barraFill = Instance.new("Frame", barraBg)
+    barraFill.Size = UDim2.new(1, 0, 1, 0)
+    barraFill.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+    barraFill.BorderSizePixel = 0
+    Corner(barraFill, 4)
+    task.spawn(function()
+        while bb.Parent do
+            pcall(function()
+                local char = hrp.Parent
+                local h = char and char:FindFirstChildOfClass("Humanoid")
+                if h then
+                    local ratio = math.clamp(h.Health / math.max(1, h.MaxHealth), 0, 1)
+                    barraFill.Size = UDim2.new(ratio, 0, 1, 0)
+                    barraFill.BackgroundColor3 = Color3.fromRGB(0, 255, 100):Lerp(Color3.fromRGB(255, 60, 30), 1 - ratio)
+                end
+                local my = getRoot()
+                if my then
+                    dist.Text = string.format("%d m", math.floor((my.Position - hrp.Position).Magnitude + 0.5))
+                end
+            end)
+            task.wait(0.35)
+        end
+    end)
+    return bb
+end
+
+local function espSetPlayers(on)
+    state.playerESP = on
+    if not on then
+        pespHLList = clearHL(pespHLList)
+        for _, pl in ipairs(Players:GetPlayers()) do
+            pcall(function()
+                local c = pl.Character
+                if c then
+                    local h = c:FindFirstChild("HumanoidRootPart")
+                    local tag = h and h:FindFirstChild("RGH_PlayerTag")
+                    if tag then tag:Destroy() end
+                end
+            end)
+        end
+    end
+end
+
+-- loop ESP (un solo pass por workspace.children: barato y sin GetDescendants)
+task.spawn(function()
+    while SG.Parent do
+        pcall(function()
+            local myRoot = getRoot()
+            -- ENTIDADES
+            if state.entityESP then
+                local budget = HL_BUDGET
+                for _, obj in ipairs(workspace:GetChildren()) do
+                    if budget <= 0 then break end
+                    if obj:IsA("Model") and obj ~= lp.Character
+                    and not obj:GetAttribute("RGH_ESP") then
+                        local lname = obj.Name:lower()
+                        for _, pat in ipairs(ENT_VISUAL) do
+                            if lname:find(pat:lower(), 1, true) then
+                                local hl = makeHighlight(obj, COLOR_ENTIDAD, OUTLINE_ENTIDAD, 0.5)
+                                obj:SetAttribute("RGH_ESP", true)
+                                table.insert(espHLList, hl)
+                                budget = budget - 1
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            -- BEACONS (visual, no toca el juego)
+            if state.beaconESP then
+                local bm = workspace:FindFirstChild("Beacons")
+                if bm then
+                    for _, b in ipairs(bm:GetChildren()) do
+                        if b:IsA("BasePart") and not b:GetAttribute("RGH_ESP") then
+                            local hl = makeHighlight(b, M.CYAN, M.WHITE, 0.55)
+                            b:SetAttribute("RGH_ESP", true)
+                            table.insert(bespHLList, hl)
+                        end
+                    end
+                end
+            end
+            -- JUGADORES
+            if state.playerESP and myRoot then
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if pl ~= lp and pl.Character then
+                        local char = pl.Character
+                        local hrp = char:FindFirstChild("HumanoidRootPart")
+                        if hrp and (hrp.Position - myRoot.Position).Magnitude <= 400 then
+                            if not char:GetAttribute("RGH_ESP") then
+                                local hl = makeHighlight(char, M.ACCENT, M.ACCENTHI, 0.4)
+                                char:SetAttribute("RGH_ESP", true)
+                                table.insert(pespHLList, hl)
+                            end
+                            if not hrp:FindFirstChild("RGH_PlayerTag") then
+                                makePlayerBillboard(hrp, pl.Name)
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+        task.wait(0.6)
+    end
+end)
+
+-- ══════════════════════════════════════
+--  MOVIMIENTO / PERSONAJE (cliente)
+-- ══════════════════════════════════════
+local safeY = 0
+local lastVoidNotify = 0
+
+addConn(RunService.Heartbeat:Connect(function()
+    local char = lp.Character
+    if not char then return end
+    local h = char:FindFirstChildOfClass("Humanoid")
+    local r = char:FindFirstChild("HumanoidRootPart")
+    if h then
+        if state.speedOn then pcall(function() h.WalkSpeed = state.walkSpeed end) end
+        if state.jumpOn then
+            pcall(function() h.UseJumpPower = true end)
+            pcall(function() h.JumpPower = state.jumpPower end)
+        end
+        if state.regenHP then pcall(function() h.Health = h.MaxHealth end) end
+    end
+    if state.noClip then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then pcall(function() p.CanCollide = false end) end
+        end
+    end
+    if state.antiVoid and r then
+        if r.Position.Y > -15 then safeY = r.Position.Y end
+        if r.Position.Y < -80 then
+            r.CFrame = CFrame.new(r.Position.X, safeY + 5, r.Position.Z)
+            if os.clock() - lastVoidNotify > 3 then
+                lastVoidNotify = os.clock()
+                Notify("Anti Void activado ⬆", M.GOLD, 2.5)
+            end
+        end
+    end
+end))
+
+-- Infinite Jump (una sola conexión, registrada)
+addConn(UIS.InputEnded:Connect(function(inp, gp)
+    if gp then return end
+    if state.infJump and inp.KeyCode == Enum.KeyCode.Space then
+        pcall(function()
+            local h = getHum()
+            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end)
+    end
+end))
+
+-- Toggle con tecla R (una sola conexión, sincronizada con el botón)
+addConn(UIS.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.KeyCode == Enum.KeyCode.R then
+        hubVisible = not hubVisible
+        MF.Visible = hubVisible
+        shadow.Visible = hubVisible
+    end
+end))
+
+RBtn.MouseButton1Click:Connect(function()
+    hubVisible = not hubVisible
+    MF.Visible = hubVisible
+    shadow.Visible = hubVisible
+    tw(rStroke, { Color = hubVisible and M.ACCENT or M.ACCENT2 }, 0.12)
+end)
+
+-- Fly (BodyVelocity + control continuo por RenderStepped + pad táctil)
+local flyBV, flyConn = nil, nil
+local flyDirs = { f = false, b = false, l = false, r = false, u = false, d = false }
+local flyPadParts = {}
+
+local function destroyFlyPad()
+    for _, o in ipairs(flyPadParts) do pcall(function() o:Destroy() end) end
+    flyPadParts = {}
+end
+
+local function buildFlyPad()
+    destroyFlyPad()
+    local pad = Instance.new("Frame", SG)
+    pad.Size = UDim2.new(0, 150, 0, 100)
+    pad.Position = UDim2.new(1, -165, 1, -120)
+    pad.BackgroundTransparency = 1
+    pad.ZIndex = 250
+    table.insert(flyPadParts, pad)
+    local defs = {
+        { k = "f", t = "▲", x = 0.5, y = 0 },
+        { k = "b", t = "▼", x = 0.5, y = 0.66 },
+        { k = "l", t = "◀", x = 0,   y = 0.33 },
+        { k = "r", t = "▶", x = 0.66, y = 0.33 },
+        { k = "u", t = "⬆", x = 1,   y = 0 },
+        { k = "d", t = "⬇", x = 1,   y = 0.66 },
+    }
+    for _, d in ipairs(defs) do
+        local b = Instance.new("TextButton", pad)
+        b.Size = UDim2.new(0, 48, 0, 46)
+        b.Position = UDim2.new(d.x, d.x >= 1 and -48 or (d.x >= 0.5 and -24 or 0), d.y, 0)
+        b.BackgroundColor3 = M.BG2
+        b.BorderSizePixel = 0
+        b.Font = Enum.Font.GothamBold
+        b.Text = d.t
+        b.TextColor3 = M.ACCENT
+        b.TextSize = 16
+        b.ZIndex = 251
+        Corner(b, 10)
+        Stroke(b, nil, 1, "ACCENTD")
+        b.InputBegan:Connect(function() flyDirs[d.k] = true end)
+        b.InputEnded:Connect(function() flyDirs[d.k] = false end)
+        table.insert(flyPadParts, b)
+    end
+end
+
+local function setFly(on)
+    state.fly = on
+    if on then
+        local r = getRoot()
+        if not r then
+            Notify("Sin personaje para activar Fly", M.RED)
+            state.fly = false
+            return
+        end
+        if flyBV then pcall(function() flyBV:Destroy() end) end
+        flyBV = Instance.new("BodyVelocity")
+        flyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        flyBV.Velocity = Vector3.new(0, 0, 0)
+        flyBV.Parent = r
+        local h = getHum()
+        if h then h.PlatformStand = true end
+        flyConn = addConn(RunService.RenderStepped:Connect(function()
+            if not flyBV or not flyBV.Parent then return end
+            local c = cam()
+            if not c then return end
+            local cf = c.CFrame
+            local v = Vector3.new(0, 0, 0)
+            if UIS:IsKeyDown(Enum.KeyCode.W) or flyDirs.f then v = v + cf.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) or flyDirs.b then v = v - cf.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) or flyDirs.l then v = v - cf.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) or flyDirs.r then v = v + cf.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.Space) or flyDirs.u then v = v + Vector3.new(0, 1, 0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftShift) or flyDirs.d then v = v - Vector3.new(0, 1, 0) end
+            if v.Magnitude > 0 then
+                flyBV.Velocity = v.Unit * state.flySpeed
+            else
+                flyBV.Velocity = Vector3.new(0, 0, 0)
+            end
+        end))
+        if UIS.TouchEnabled then buildFlyPad() end
+        Notify("Fly ON" .. (UIS.TouchEnabled and " — usa el pad táctil" or " — WASD + Space/Shift"), M.ACCENT)
+    else
+        if flyConn then flyConn:Disconnect(); flyConn = nil end
+        if flyBV then pcall(function() flyBV:Destroy() end); flyBV = nil end
+        destroyFlyPad()
+        local h = getHum()
+        if h then h.PlatformStand = false end
+        Notify("Fly OFF", M.GRAY)
+    end
+end
+
+-- Anti-AFK (una sola conexión, registrada y desconectable)
+local afkConn = nil
+local function setAntiAFK(on)
+    state.antiAFK = on
+    if on and not afkConn then
+        local VU = game:GetService("VirtualUser")
+        afkConn = addConn(lp.Idled:Connect(function()
+            pcall(function()
+                VU:Button2Down(Vector2.new(0, 0), cam().CFrame)
+                task.wait(1)
+                VU:Button2Up(Vector2.new(0, 0), cam().CFrame)
+            end)
+        end))
+        Notify("Anti-AFK ON", M.ACCENT)
+    elseif not on and afkConn then
+        afkConn:Disconnect()
+        afkConn = nil
+        Notify("Anti-AFK OFF", M.GRAY)
+    end
+end
+
+-- Tercera persona con backup/restauración real
+local camBackup = nil
+local function setThirdPerson(on)
+    if on then
+        if not camBackup then
+            camBackup = {
+                maxz = lp.CameraMaxZoomDistance,
+                minz = lp.CameraMinZoomDistance,
+                mode = lp.CameraMode,
+            }
+        end
+        lp.CameraMaxZoomDistance = 20
+        lp.CameraMinZoomDistance = 5
+        lp.CameraMode = Enum.CameraMode.Classic
+        Notify("Tercera persona ON", M.ACCENT)
+    else
+        if camBackup then
+            pcall(function()
+                lp.CameraMaxZoomDistance = camBackup.maxz
+                lp.CameraMinZoomDistance = camBackup.minz
+                lp.CameraMode = camBackup.mode
+            end)
+        else
+            pcall(function()
+                lp.CameraMaxZoomDistance = 0.5
+                lp.CameraMinZoomDistance = 0.5
+                lp.CameraMode = Enum.CameraMode.LockFirstPerson
+            end)
+        end
+        Notify("Primera persona restaurada", M.GRAY)
+    end
+end
+
+-- Flashback (grabación local de CFrames)
+local flashRecording = false
+local flashPos = {}
+task.spawn(function()
+    while SG.Parent do
+        if flashRecording then
+            local r = getRoot()
+            if r then
+                table.insert(flashPos, r.CFrame)
+                if #flashPos > 300 then table.remove(flashPos, 1) end
+            end
+        end
+        task.wait(0.05)
+    end
+end)
+
+-- ══════════════════════════════════════
+--  HUD FPS/PING (opcional)
+-- ══════════════════════════════════════
+local fpsHudFrame, fpsLbl, pingLbl = nil, nil, nil
+local fpsCounter, fpsAcc = 0, 0
+
+addConn(RunService.RenderStepped:Connect(function(dt)
+    if fpsHudFrame and fpsHudFrame.Parent then
+        fpsCounter = fpsCounter + 1
+        fpsAcc = fpsAcc + dt
+        if fpsAcc >= 1 then
+            local val = math.floor(fpsCounter / fpsAcc + 0.5)
+            fpsCounter = 0
+            fpsAcc = 0
+            pcall(function()
+                fpsLbl.Text = "FPS " .. val
+                pingLbl.Text = math.floor(lp:GetNetworkPing() * 1000 + 0.5) .. " ms"
+            end)
+        end
+    end
+end))
+
+local function setFpsHud(on)
+    state.fpsHud = on
+    if on then
+        if fpsHudFrame then pcall(function() fpsHudFrame:Destroy() end) end
+        fpsHudFrame = Instance.new("Frame", SG)
+        fpsHudFrame.Size = UDim2.new(0, 108, 0, 44)
+        fpsHudFrame.Position = UDim2.new(0, 10, 0, 10)
+        fpsHudFrame.BackgroundColor3 = M.BG2
+        fpsHudFrame.BackgroundTransparency = 0.15
+        fpsHudFrame.BorderSizePixel = 0
+        fpsHudFrame.ZIndex = 220
+        Corner(fpsHudFrame, 8)
+        Stroke(fpsHudFrame, nil, 1, "ACCENTD")
+        reg(fpsHudFrame, "BackgroundColor3", "BG2")
+        fpsLbl = Instance.new("TextLabel", fpsHudFrame)
+        fpsLbl.Size = UDim2.new(1, -12, 0.5, 0); fpsLbl.Position = UDim2.new(0, 8, 0, 2)
+        fpsLbl.BackgroundTransparency = 1; fpsLbl.Font = Enum.Font.Code
+        fpsLbl.Text = "FPS --"; fpsLbl.TextColor3 = M.ACCENT
+        fpsLbl.TextSize = 12; fpsLbl.TextXAlignment = Enum.TextXAlignment.Left; fpsLbl.ZIndex = 221
+        reg(fpsLbl, "TextColor3", "ACCENT")
+        pingLbl = Instance.new("TextLabel", fpsHudFrame)
+        pingLbl.Size = UDim2.new(1, -12, 0.5, 0); pingLbl.Position = UDim2.new(0, 8, 0.5, 0)
+        pingLbl.BackgroundTransparency = 1; pingLbl.Font = Enum.Font.Code
+        pingLbl.Text = "-- ms"; pingLbl.TextColor3 = M.GRAYLT
+        pingLbl.TextSize = 11; pingLbl.TextXAlignment = Enum.TextXAlignment.Left; pingLbl.ZIndex = 221
+        reg(pingLbl, "TextColor3", "GRAYLT")
+    else
+        if fpsHudFrame then pcall(function() fpsHudFrame:Destroy() end); fpsHudFrame = nil end
+    end
+end
+
+-- ══════════════════════════════════════
+--  AJUSTES PERSISTENTES
+-- ══════════════════════════════════════
+local function loadConfig()
+    local s = fileRead(CONFIG.ConfigFile)
+    local t = s and jdec(s)
+    if type(t) == "table" then
+        if t.theme and THEMES[t.theme] then cfg.theme = t.theme end
+        if type(t.scale) == "number" then cfg.scale = math.clamp(t.scale, 0.75, 1.35) end
+        if type(t.notifDur) == "number" then cfg.notifDur = math.clamp(t.notifDur, 2, 8) end
+        if type(t.fpsHud) == "boolean" then cfg.fpsHud = t.fpsHud end
+    end
+    NotifDur = cfg.notifDur
+end
+local function saveConfig()
+    fileWrite(CONFIG.ConfigFile, jenc(cfg))
+end
+
+-- Owner Key (se pide en runtime; opcionalmente se recuerda en el ejecutor)
+Auth.ownerKey = fileRead(CONFIG.OwnerFile)
+if Auth.ownerKey then Auth.ownerKey = Auth.ownerKey:gsub("%s", "") end
+if Auth.ownerKey == "" then Auth.ownerKey = nil end
+
+-- refs para refrescar UI de roles / estado
+local roleUIFns = {}
+local function updateRoleUI()
+    for _, fn in ipairs(roleUIFns) do pcall(fn) end
+end
+local estadoRows = {}
+
+-- ══════════════════════════════════════
+--  INPUT HELPER (para pestaña Dev)
+-- ══════════════════════════════════════
+local function mkInput(ti, placeholder)
+    local wrap = Instance.new("Frame", tabFrames[ti])
+    wrap.Size = UDim2.new(1, 0, 0, 34); wrap.BackgroundColor3 = M.BG3
+    wrap.BorderSizePixel = 0; wrap.LayoutOrder = nextLO(ti); wrap.ZIndex = 12
+    Corner(wrap, 8); Stroke(wrap, nil, 1, "ACCENTD")
+    reg(wrap, "BackgroundColor3", "BG3")
+    local pref = Instance.new("TextLabel", wrap)
+    pref.Size = UDim2.new(0, 22, 1, 0); pref.Position = UDim2.new(0, 6, 0, 0)
+    pref.BackgroundTransparency = 1; pref.Font = Enum.Font.GothamBold
+    pref.Text = ">"; pref.TextColor3 = M.ACCENT; pref.TextSize = 12; pref.ZIndex = 13
+    reg(pref, "TextColor3", "ACCENT")
+    local tb = Instance.new("TextBox", wrap)
+    tb.Size = UDim2.new(1, -34, 1, 0); tb.Position = UDim2.new(0, 28, 0, 0)
+    tb.BackgroundTransparency = 1; tb.Text = ""
+    tb.PlaceholderText = placeholder; tb.PlaceholderColor3 = M.ACCENTD
+    tb.TextColor3 = M.ACCENTHI; tb.TextSize = 11; tb.Font = Enum.Font.Gotham
+    tb.ClearTextOnFocus = false; tb.TextXAlignment = Enum.TextXAlignment.Left
+    tb.TextTruncate = Enum.TextTruncate.AtEnd; tb.ZIndex = 13
+    reg(tb, "TextColor3", "ACCENTHI")
+    return tb
+end
+
+-- ══════════════════════════════════════
+--  TAB: MAIN
+-- ══════════════════════════════════════
+local function buildMain(T)
+    mkSection(T, "🌀 Teleport (cliente)")
+    mkBtnRow(T, {
+        { label = "🏠 Spawn", cb = function()
+            local r = getRoot()
+            if not r then return end
+            local sp = workspace:FindFirstChild("SpawnLocation", true)
+            r.CFrame = sp and (sp.CFrame + Vector3.new(0, 4, 0)) or CFrame.new(0, 5, 0)
+            Notify("TP → Spawn", M.ACCENT)
+        end },
+        { label = "🛡 SafeR", cb = function()
+            if tpSafe() then Notify("TP → Saferoom", M.ACCENT)
+            else Notify("Saferoom no encontrado", M.GOLD) end
+        end },
+        { label = "🚪 Último", cb = function()
+            local rooms = getRooms()
+            local last = rooms[#rooms]
+            if last then
+                local bp = last.model:FindFirstChildWhichIsA("BasePart")
+                if bp then tpTo(bp); Notify("TP → Cuarto " .. last.n, M.ACCENT) end
+            else
+                Notify("Sin cuartos", M.GOLD)
+            end
+        end },
+    })
+
+    mkSection(T, "🔧 Utilidades")
+    mkBtnRow(T, {
+        { label = "🔄 Rejoin", cb = function()
+            Notify("Rejoining...", M.GOLD)
+            pcall(function() TeleportSvc:Teleport(game.PlaceId, lp) end)
+        end },
+        { label = "📋 Posición", cb = function()
+            local r = getRoot()
+            if not r then return end
+            local p = r.Position
+            local s = math.floor(p.X) .. "," .. math.floor(p.Y) .. "," .. math.floor(p.Z)
+            clipboard(s)
+            Notify("Pos: " .. s, M.ACCENT)
+        end },
+        { label = "📋 Job ID", cb = function()
+            clipboard(game.JobId)
+            Notify("Job ID copiado", M.ACCENT)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "💬 Discord", color = Color3.fromRGB(45, 65, 195), cb = function()
+            clipboard(CONFIG.Discord)
+            Notify("Discord copiado", M.CYAN)
+        end },
+        { label = "📋 Info servidor", cb = function()
+            local info = "Place: " .. game.PlaceId
+                .. "\nJob: " .. game.JobId
+                .. "\nJugadores: " .. #Players:GetPlayers()
+            clipboard(info)
+            Notify("Info del servidor copiada", M.ACCENT)
+        end },
+    })
+
+    mkSection(T, "☑ Sesión")
+    mkToggle(T, "⏰ Anti-AFK", false, function(s) setAntiAFK(s) end)
+
+    mkSection(T, "📼 Flashback (grabación local)")
+    mkBtnRow(T, {
+        { label = "▶ Grabar", cb = function()
+            flashRecording = true; flashPos = {}
+            Notify("Grabando...", M.CYAN)
+        end },
+        { label = "⏹ Stop", cb = function()
+            flashRecording = false
+            Notify("Parado — " .. #flashPos .. " frames", M.GRAY)
+        end },
+        { label = "⏪ Replay", cb = function()
+            if #flashPos == 0 then Notify("Sin frames grabados", M.RED); return end
+            task.spawn(function()
+                for i = #flashPos, 1, -1 do
+                    local r = getRoot()
+                    if not r then break end
+                    pcall(function() r.CFrame = flashPos[i] end)
+                    task.wait(0.03)
+                end
+                Notify("Flashback completado", M.ACCENT)
+            end)
+        end },
+    })
+
+    mkSection(T, "ℹ Nota de la V4")
+    mkCard(T, "🛡 Sin manipulación de remotes",
+        "El autofarm por FireServer, INF.LOVE, God Mode por destrucción de KillClient y el borrado de remotes de entidades fueron eliminados por la regla del proyecto (no manipular RemoteEvents ajenos). Ahora tienes ESP y alertas 100% visuales, que no tocan el servidor del juego.", M.GOLD)
+end
+
+-- ══════════════════════════════════════
+--  TAB: VISUAL
+-- ══════════════════════════════════════
+local function buildVisual(T)
+    mkSection(T, "💡 Iluminación")
+    mkToggle(T, "☀ Fullbright", false, function(s) setFullbright(s) end)
+
+    mkSection(T, "👁 ESP visual (no toca el juego)")
+    mkToggle(T, "👹 Entity ESP (entidades de Grace)", false, function(s) espSetEntities(s) end)
+    mkToggle(T, "👥 Player ESP + vida + distancia", false, function(s) espSetPlayers(s) end)
+    mkLabel(T, "Presupuesto de highlights: " .. HL_BUDGET .. " — auto-limpieza incluida", M.GRAY)
+
+    mkSection(T, "📷 Cámara")
+    mkToggle(T, "🎥 Tercera persona", false, function(s) setThirdPerson(s) end)
+
+    mkSection(T, "🚀 Rendimiento")
+    local fpsBtn = mkBtn(T, "⚡ FPS Booster — OFF", nil, function()
+        applyAntiLag(not state.antiLag)
+    end)
+    antiLagBtnRef = fpsBtn
+    mkBtnRow(T, {
+        { label = "🌑 Sin sombras", cb = function()
+            pcall(function() Lighting.GlobalShadows = false end)
+            Notify("Sombras desactivadas", M.ACCENT)
+        end },
+        { label = "☀ Con sombras", cb = function()
+            pcall(function() Lighting.GlobalShadows = true end)
+            Notify("Sombras activadas", M.GRAY)
+        end },
+    })
+    mkToggle(T, "🖥 HUD FPS/Ping", false, function(s)
+        setFpsHud(s)
+        cfg.fpsHud = s
+        saveConfig()
+    end)
+end
+
+-- ══════════════════════════════════════
+--  TAB: PLAYER
+-- ══════════════════════════════════════
+local function buildPlayer(T)
+    mkSection(T, "🏃 Movimiento")
+    mkToggle(T, "👻 NoClip", false, function(s)
+        state.noClip = s
+        if not s and lp.Character then
+            for _, p in ipairs(lp.Character:GetDescendants()) do
+                if p:IsA("BasePart") then pcall(function() p.CanCollide = true end) end
+            end
+        end
+    end)
+    mkToggle(T, "♾ Infinite Jump", false, function(s) state.infJump = s end)
+    mkToggle(T, "🌀 Anti Void (rescate)", false, function(s) state.antiVoid = s end)
+
+    mkSection(T, "⚡ Velocidad")
+    mkToggle(T, "💨 Speed Hack", false, function(s)
+        state.speedOn = s
+        if not s then pcall(function() local h = getHum(); if h then h.WalkSpeed = 16 end end) end
+    end)
+    mkSlider(T, "💨 WalkSpeed", 16, 250, state.walkSpeed, function(v) state.walkSpeed = v end)
+    mkToggle(T, "🏃 Jump Power personalizado", false, function(s) state.jumpOn = s end)
+    mkSlider(T, "🏃 JumpPower", 50, 350, state.jumpPower, function(v) state.jumpPower = v end)
+
+    mkSection(T, "✈ Fly")
+    mkToggle(T, "✈ Fly (WASD + Space/Shift o pad)", false, function(s) setFly(s) end)
+    mkSlider(T, "✈ Fly Speed", 20, 150, state.flySpeed, function(v) state.flySpeed = v end)
+
+    mkSection(T, "❤ Vida")
+    mkToggle(T, "❤ Regen HP (cliente)", false, function(s)
+        state.regenHP = s
+        Notify("Regen HP " .. (s and "ON — solo afecta daño calculado en tu cliente" or "OFF"),
+            s and M.ACCENT or M.GRAY, s and 5 or 3)
+    end)
+
+    mkSection(T, "🔧 Personaje")
+    mkBtnRow(T, {
+        { label = "📏 +Size", cb = function()
+            pcall(function()
+                local h = getHum()
+                if not h then return end
+                local d = h:GetAppliedDescription()
+                for _, k in ipairs({ "HeadScale", "BodyWidthScale", "BodyHeightScale", "BodyDepthScale" }) do
+                    d[k] = math.min((d[k] or 1) + 0.15, 3)
+                end
+                h:ApplyDescription(d)
+            end)
+        end },
+        { label = "📏 -Size", cb = function()
+            pcall(function()
+                local h = getHum()
+                if not h then return end
+                local d = h:GetAppliedDescription()
+                for _, k in ipairs({ "HeadScale", "BodyWidthScale", "BodyHeightScale", "BodyDepthScale" }) do
+                    d[k] = math.max((d[k] or 1) - 0.15, 0.3)
+                end
+                h:ApplyDescription(d)
+            end)
+        end },
+        { label = "↩ Reset", cb = function()
+            pcall(function()
+                local h = getHum()
+                if h then h:ApplyDescription(Players:GetHumanoidDescriptionFromUserId(lp.UserId)) end
+            end)
+            Notify("Tamaño reset", M.ACCENT)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "🔄 Reset personaje", cb = function()
+            pcall(function() local h = getHum(); if h then h.Health = 0 end end)
+            Notify("Reseteando...", M.GOLD)
+        end },
+    })
+end
+
+-- ══════════════════════════════════════
+--  TAB: REPRIEVE
+-- ══════════════════════════════════════
+local function buildReprieve(T)
+    mkCard(T, "⚠ Qué cambió en V4",
+        "El farm automático de Reprieve (VIM + firetouchinterest + spam de Enter) fue eliminado: simulaba toques y teclas para forzar XP del servidor. Lo que queda es información + ESP visual de beacons.", M.GOLD)
+
+    mkSection(T, "📡 ESP visual")
+    mkToggle(T, "📡 Beacons ESP (ver balizas)", false, function(s) espSetBeacons(s) end)
+    mkLabel(T, "Los beacons se marcan en cian cuando entran a workspace", M.GRAY)
+
+    mkSection(T, "📖 Guía rápida")
+    mkCard(T, "1 — Entrar a REPRIEVE",
+        "Ve al confesionario del lobby de Grace y únete a REPRIEVE.", M.CYAN)
+    mkCard(T, "2 — Timer y beacons",
+        "Cuando aparece el TIMER, recoge las beacons del mapa. Con Beacons ESP se ven resaltadas en cian a través de las paredes.", M.CYAN)
+    mkCard(T, "3 — Elige bien",
+        "Cada elección del confesionario suma XP; si el contador llega a 0 aparece SHAME. Juega limpio y usa el ESP solo para orientarte.", M.ACCENT)
+
+    mkSection(T, "💜 XP")
+    mkCard(T, "Cómo subir XP sin exploits",
+        "Consejo: usa Flashback (pestaña Main) para rehecer rutas, Beacons ESP para no perder balizas y Anti Void por seguridad. El XP se gana jugando REPRIEVE de verdad.", M.PINK)
+end
+
+-- ══════════════════════════════════════
+--  TAB: PERFIL
+-- ══════════════════════════════════════
+local roleChipLbl = nil
+
+local function buildPerfil(T)
+    -- Tarjeta de identidad (V4.1): avatar grande, chip de rol y meta
+    local card = Instance.new("Frame", tabFrames[T])
+    card.Size = UDim2.new(1, 0, 0, 134); card.BackgroundColor3 = M.CARD
+    card.BorderSizePixel = 0; card.LayoutOrder = nextLO(T); card.ZIndex = 12
+    Corner(card, 12); Stroke(card, nil, 1, "ACCENTD")
+    reg(card, "BackgroundColor3", "CARD")
+
+    -- franja de luz animada arriba de la tarjeta
+    local strip = Instance.new("Frame", card)
+    strip.Size = UDim2.new(1, 0, 0, 3)
+    strip.BackgroundColor3 = M.ACCENT; strip.BorderSizePixel = 0; strip.ZIndex = 13
+    Corner(strip, 2)
+    reg(strip, "BackgroundColor3", "ACCENT")
+    local stripG = Instance.new("UIGradient", strip)
+    stripG.Color = shine3("ACCENT", "ACCENTHI")
+    addSweep(stripG, 0.28)
+    regFn(function() stripG.Color = shine3("ACCENT", "ACCENTHI") end)
+
+    local av = Instance.new("ImageLabel", card)
+    av.Size = UDim2.new(0, 82, 0, 82); av.Position = UDim2.new(0, 14, 0, 26)
+    av.BackgroundTransparency = 1; av.ZIndex = 13
+    av.Image = "rbxthumb://type=AvatarHeadShot&id=" .. lp.UserId .. "&w=150&h=150"
+    Corner(av, 41)
+    local avStroke = Stroke(av, nil, 2, "ACCENT2")
+
+    local nameLbl = Instance.new("TextLabel", card)
+    nameLbl.Size = UDim2.new(1, -120, 0, 22); nameLbl.Position = UDim2.new(0, 106, 0, 20)
+    nameLbl.BackgroundTransparency = 1; nameLbl.Font = Enum.Font.GothamBold
+    nameLbl.Text = lp.DisplayName; nameLbl.TextColor3 = M.WHITE
+    nameLbl.TextSize = 17; nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.TextTruncate = Enum.TextTruncate.AtEnd; nameLbl.ZIndex = 13
+
+    local userLbl = Instance.new("TextLabel", card)
+    userLbl.Size = UDim2.new(1, -120, 0, 16); userLbl.Position = UDim2.new(0, 106, 0, 44)
+    userLbl.BackgroundTransparency = 1; userLbl.Font = Enum.Font.Gotham
+    userLbl.Text = "@" .. lp.Name .. "  ·  " .. lp.UserId
+    userLbl.TextColor3 = M.GRAY; userLbl.TextSize = 11
+    userLbl.TextXAlignment = Enum.TextXAlignment.Left
+    userLbl.TextTruncate = Enum.TextTruncate.AtEnd; userLbl.ZIndex = 13
+    reg(userLbl, "TextColor3", "GRAY")
+
+    local chipBg = Instance.new("Frame", card)
+    chipBg.Size = UDim2.new(1, -120, 0, 24); chipBg.Position = UDim2.new(0, 106, 0, 68)
+    chipBg.BackgroundColor3 = M.ACCENTS; chipBg.BorderSizePixel = 0; chipBg.ZIndex = 13
+    Corner(chipBg, 12)
+    reg(chipBg, "BackgroundColor3", "ACCENTS")
+
+    roleChipLbl = Instance.new("TextLabel", chipBg)
+    roleChipLbl.Size = UDim2.fromScale(1, 1)
+    roleChipLbl.BackgroundTransparency = 1
+    roleChipLbl.Font = Enum.Font.GothamBold
+    roleChipLbl.TextColor3 = M.ACCENT; roleChipLbl.TextSize = 11
+    roleChipLbl.TextXAlignment = Enum.TextXAlignment.Center
+    roleChipLbl.TextTruncate = Enum.TextTruncate.AtEnd; roleChipLbl.ZIndex = 14
+
+    local metaLbl = Instance.new("TextLabel", card)
+    metaLbl.Size = UDim2.new(1, -28, 0, 16); metaLbl.Position = UDim2.new(0, 14, 0, 114)
+    metaLbl.BackgroundTransparency = 1; metaLbl.Font = Enum.Font.Gotham
+    local devTxt = UIS.TouchEnabled and "📱 Móvil" or (UIS.GamepadEnabled and "🎮 Mando" or "💻 PC")
+    metaLbl.Text = "📅 Cuenta: " .. lp.AccountAge .. " días   ·   " .. devTxt .. "   ·   v" .. CONFIG.Version
+    metaLbl.TextColor3 = M.GRAY; metaLbl.TextSize = 10
+    metaLbl.TextXAlignment = Enum.TextXAlignment.Left
+    metaLbl.TextTruncate = Enum.TextTruncate.AtEnd; metaLbl.ZIndex = 13
+    reg(metaLbl, "TextColor3", "GRAY")
+
+    table.insert(roleUIFns, function()
+        local meta = ROLE_META[Auth.role]
+        local colKey = meta and meta.col or "GRAY"
+        roleChipLbl.Text = "🛡 " .. Auth.role .. (Auth.status == "ONLINE" and "  ·  GUARD ✓" or "  ·  offline")
+        roleChipLbl.TextColor3 = M[colKey] or M.ACCENT
+        avStroke.Color = M[colKey] or M.ACCENT
+    end)
+
+    mkSection(T, "📋 Información de la cuenta")
+    mkValueRow(T, "Usuario", function() return lp.Name end, true)
+    mkValueRow(T, "DisplayName", function() return lp.DisplayName end, true)
+    mkValueRow(T, "UserId", function() return lp.UserId end, true)
+    mkValueRow(T, "Edad de cuenta", function()
+        return lp.AccountAge .. " días (" .. os.date("%d/%m/%Y", os.time() - lp.AccountAge * 86400) .. ")"
+    end, false)
+    mkValueRow(T, "Estado auth", function()
+        return Auth.status == "ONLINE" and "GUARD en línea ✓" or "SIN GUARD (offline)"
+    end, false)
+    mkValueRow(T, "Rol", function() return Auth.role end, false)
+    mkValueRow(T, "Dispositivo", function()
+        if UIS.TouchEnabled then return "Móvil / Tablet" end
+        if UIS.GamepadEnabled then return "Mando" end
+        return "PC"
+    end, false)
+    mkValueRow(T, "Ejecutor", function() return executorName() end, false)
+    mkValueRow(T, "Servidor (PlaceId)", function() return game.PlaceId end, true)
+    mkValueRow(T, "JobId", function() return game.JobId end, true)
+    mkValueRow(T, "Jugadores", function() return #Players:GetPlayers() .. " / " .. Players.MaxPlayers end, false)
+
+    mkSection(T, "⚙ Acciones")
+    mkBtnRow(T, {
+        { label = "🔄 Actualizar estado", cb = function()
+            Notify("Consultando Guard...", M.CYAN, 2)
+            task.wait(0.1)
+            local res = Guard.check(Auth.keyHash, true)
+            if res then
+                Auth.status = "ONLINE"
+                Auth.role = res.role or Auth.role
+                Auth.lastRes = res
+                updateRoleUI()
+                Notify("Estado actualizado — rol " .. Auth.role, M.ACCENT, 3)
+            else
+                Auth.status = "OFFLINE"
+                updateRoleUI()
+                Notify("Guard sin respuesta — modo offline", M.ORANGE, 4)
+            end
+        end },
+        { label = "📋 Copiar mi ID", cb = function()
+            clipboard(tostring(lp.UserId))
+            Notify("UserId copiado", M.ACCENT)
+        end },
+    })
+end
+
+-- ══════════════════════════════════════
+--  TAB: ROLES
+-- ══════════════════════════════════════
+local rolesBodyLbl = nil
+
+local function buildRoles(T)
+    local card = Instance.new("Frame", tabFrames[T])
+    card.Size = UDim2.new(1, 0, 0, 84); card.BackgroundColor3 = M.CARD
+    card.BorderSizePixel = 0; card.LayoutOrder = nextLO(T); card.ZIndex = 12
+    Corner(card, 10); Stroke(card, nil, 1, "ACCENTD")
+    reg(card, "BackgroundColor3", "CARD")
+
+    local title = Instance.new("TextLabel", card)
+    title.Size = UDim2.new(1, -20, 0, 20); title.Position = UDim2.new(0, 12, 0, 8)
+    title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBold
+    title.Text = "🛡 TU ROL"; title.TextColor3 = M.ACCENT; title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left; title.ZIndex = 13
+    reg(title, "TextColor3", "ACCENT")
+
+    rolesBodyLbl = Instance.new("TextLabel", card)
+    rolesBodyLbl.Size = UDim2.new(1, -20, 1, -36); rolesBodyLbl.Position = UDim2.new(0, 12, 0, 30)
+    rolesBodyLbl.BackgroundTransparency = 1; rolesBodyLbl.Font = Enum.Font.Gotham
+    rolesBodyLbl.TextColor3 = M.GRAY; rolesBodyLbl.TextSize = 11
+    rolesBodyLbl.TextXAlignment = Enum.TextXAlignment.Left
+    rolesBodyLbl.TextYAlignment = Enum.TextYAlignment.Top
+    rolesBodyLbl.TextWrapped = true; rolesBodyLbl.ZIndex = 13
+    reg(rolesBodyLbl, "TextColor3", "GRAY")
+
+    table.insert(roleUIFns, function()
+        local meta = ROLE_META[Auth.role]
+        local src = Auth.status == "ONLINE" and "fuente: Guard (servidor)" or "fuente: local (offline)"
+        rolesBodyLbl.Text = (meta and meta.desc or "Rol desconocido.") .. "\n" .. src ..
+            "\nPermisos activos: Dev " .. (hasPerm("dev") and "✓" or "✗") ..
+            "  ·  Temas VIP " .. (hasPerm("vip") and "✓" or "✗")
+    end)
+
+    mkSection(T, "📜 Jerarquía")
+    for _, role in ipairs(ROLE_ORDER) do
+        local meta = ROLE_META[role]
+        local who = ""
+        if role == "OWNER" then who = " — " .. CONFIG.Owner end
+        mkCard(T, role .. who, meta.desc, M[meta.col] or M.ACCENT)
+    end
+    mkCard(T, "🔒 Validación",
+        "Los roles se deciden SOLO en el Worker (variables OWNER_ID/COOWNER_ID/... o override con /role). El cliente muestra el rol que le devuelve el servidor firmado; no puede concederse permisos.", M.CYAN)
+
+    mkSection(T, "⚙ Acciones")
+    mkBtn(T, "🔄 Actualizar rol desde el Guard", nil, function()
+        Notify("Consultando rol...", M.CYAN, 2)
+        task.wait(0.1)
+        local res = Guard.check(Auth.keyHash, true)
+        if res and not res.banned then
+            Auth.status = "ONLINE"
+            Auth.role = res.role or Auth.role
+            Auth.lastRes = res
+            updateRoleUI()
+            Notify("Rol actualizado: " .. Auth.role, M.ACCENT, 3)
+        else
+            Notify("Guard sin respuesta", M.RED, 3)
+        end
+    end)
+end
+
+-- ══════════════════════════════════════
+--  TAB: AJUSTES
+-- ══════════════════════════════════════
+local function buildAjustes(T)
+    mkSection(T, "🎨 Temas")
+    local themeNames = {}
+    for name in pairs(THEMES) do table.insert(themeNames, name) end
+    table.sort(themeNames)
+    local i = 1
+    while i <= #themeNames do
+        local pair = {}
+        for j = i, math.min(i + 1, #themeNames) do
+            local nm = themeNames[j]
+            table.insert(pair, { label = "🎨 " .. nm, cb = function()
+                if nm == "Oro VIP" and not hasPerm("vip") then
+                    Notify("Tema Oro VIP exclusivo para PREMIUM+", M.GOLD, 4)
+                    return
+                end
+                cfg.theme = nm
+                applyTheme(nm)
+                saveConfig()
+                Notify("Tema aplicado: " .. nm, M.ACCENT, 2.5)
+            end })
+        end
+        mkBtnRow(T, pair)
+        i = i + 2
+    end
+    mkLabel(T, "Tema actual: " .. cfg.theme .. " — se guarda automáticamente", M.GRAY)
+
+    mkSection(T, "📐 Interfaz")
+    mkSlider(T, "🔍 Escala de UI", 0.75, 1.35, cfg.scale, function(v)
+        cfg.scale = v
+        UIScaleObj.Scale = v
+        saveConfig()
+    end, 2)
+    mkSlider(T, "🔔 Duración de avisos", 2, 8, cfg.notifDur, function(v)
+        cfg.notifDur = v
+        NotifDur = v
+        saveConfig()
+    end, 0)
+
+    mkSection(T, "💾 Sistema")
+    mkBtnRow(T, {
+        { label = "💾 Guardar ahora", cb = function()
+            saveConfig()
+            Notify("Ajustes guardados", M.ACCENT, 2.5)
+        end },
+        { label = "↩ Restablecer", cb = function()
+            cfg.theme = "Verde Neón"
+            cfg.scale = 1
+            cfg.notifDur = 4
+            cfg.fpsHud = false
+            applyTheme(cfg.theme)
+            UIScaleObj.Scale = 1
+            NotifDur = 4
+            setFpsHud(false)
+            saveConfig()
+            Notify("Ajustes restablecidos", M.GRAY, 3)
+        end },
+    })
+    mkBtn(T, "🗑 Destruir script (limpieza total)", Color3.fromRGB(60, 16, 16), function()
+        if _G.RGH_V4 and _G.RGH_V4.Destroy then _G.RGH_V4.Destroy() end
+    end)
+end
+
+-- ══════════════════════════════════════
+--  TAB: ESTADO (diagnóstico de conexión)
+-- ══════════════════════════════════════
+local function buildEstado(T)
+    mkSection(T, "📡 Estado del Guard")
+    estadoRows.estado = mkValueRow(T, "Conexión", function() return "-" end, false)
+    estadoRows.lat    = mkValueRow(T, "Latencia", function() return "-" end, false)
+    estadoRows.rol    = mkValueRow(T, "Rol", function() return "-" end, false)
+    estadoRows.key    = mkValueRow(T, "Key", function() return "-" end, false)
+    estadoRows.sig    = mkValueRow(T, "Firma", function() return "-" end, false)
+    estadoRows.flag   = mkValueRow(T, "Key compartida", function() return "-" end, false)
+    estadoRows.mem    = mkValueRow(T, "En Discord", function() return "-" end, false)
+    estadoRows.last   = mkValueRow(T, "Último check", function() return "-" end, false)
+    estadoRows.hwid   = mkValueRow(T, "Huella HWID", function() return getHwid() end, true)
+
+    local function refreshEstado()
+        local res = Auth.lastRes
+        local set = function(r, txt) if r and r.set then pcall(r.set, txt) end end
+        set(estadoRows.estado, Auth.status == "ONLINE" and "GUARD en línea ✓" or "SIN GUARD (offline)")
+        set(estadoRows.lat, res and (tostring(res.latency) .. " ms") or "-")
+        set(estadoRows.rol, Auth.role)
+        set(estadoRows.key, res and (res.keyvalid and "válida ✓" or "no válida ✗") or "-")
+        set(estadoRows.sig, res and (res.sigOK and "firma OK ✓" or "FIRMA INVÁLIDA ✗") or "-")
+        set(estadoRows.flag, res and (res.flag and "⚠ posible reventa" or "ok") or "-")
+        set(estadoRows.mem, res and (res.unknown and "¿? (sin datos)" or (res.member and "sí ✓" or "no ✗")) or "-")
+        set(estadoRows.last, res and os.date("%d/%m %H:%M:%S", res.t) or "-")
+    end
+    _G.RGH_V4.RefreshEstado = refreshEstado
+
+    mkSection(T, "🔐 Firma y secret")
+    if WORKER_SECRET == "" then
+        mkCard(T, "⚠ Sin SECRET configurado",
+            "No hay secreto en el script: las respuestas del Guard no se validan. Genera tu bloque con: node rg_tools.js encode \"TU-SECRETO\" y pégalo en CONFIG.SecretEnc.", M.ORANGE)
+    elseif digest(WORKER_SECRET):sub(1, 8) == DEFAULT_SECRET_FP then
+        mkCard(T, "⚠ SECRET de fábrica",
+            "Sigues usando el secret de ejemplo. Cámbialo en el Worker (variable SECRET) y genera tu bloque nuevo con rg_tools.js encode.", M.ORANGE)
+    else
+        mkCard(T, "✓ SECRET configurado",
+            "Huella local del secret: " .. digest(WORKER_SECRET):sub(1, 8) .. ". En /diag el Worker debe mostrar exactamente la misma huella (secretFp).", M.ACCENT2)
+    end
+
+    mkSection(T, "🖥 Servidor actual")
+    mkValueRow(T, "PlaceId", function() return game.PlaceId end, true)
+    mkValueRow(T, "JobId", function() return game.JobId end, true)
+    mkValueRow(T, "Jugadores", function() return #Players:GetPlayers() .. " / " .. Players.MaxPlayers end, false)
+
+    mkSection(T, "⚙ Acciones")
+    mkBtnRow(T, {
+        { label = "🔄 Re-check", cb = function()
+            Notify("Consultando Guard...", M.CYAN, 2)
+            task.wait(0.05)
+            local res = Guard.check(Auth.keyHash, true)
+            if res and not res.banned then
+                Auth.status = "ONLINE"
+                Auth.role = res.role or Auth.role
+                Auth.lastRes = res
+                updateRoleUI()
+                pcall(_G.RGH_V4.RefreshEstado)
+                Notify("Guard OK — rol " .. Auth.role, M.ACCENT, 3)
+            elseif res and res.banned then
+                banScreen(res.reason)
+            else
+                Auth.status = "OFFLINE"
+                updateRoleUI()
+                pcall(_G.RGH_V4.RefreshEstado)
+                Notify("Guard sin respuesta — modo offline", M.RED, 4)
+            end
+        end },
+        { label = "📋 Copiar diagnóstico", cb = function()
+            local res = Auth.lastRes
+            local txt = "RGH v4 diagnóstico\n"
+                .. "URL: " .. CONFIG.WorkerURL .. "\n"
+                .. "Estado: " .. Auth.status .. "\n"
+                .. "Latencia: " .. (res and tostring(res.latency) .. " ms" or "-") .. "\n"
+                .. "Rol: " .. Auth.role .. "\n"
+                .. "Key válida: " .. (res and tostring(res.keyvalid) or "-") .. "\n"
+                .. "Firma: " .. (res and tostring(res.sigOK) or "-") .. "\n"
+                .. "Ejecutor: " .. executorName()
+            clipboard(txt)
+            Notify("Diagnóstico copiado", M.ACCENT, 3)
+        end },
+        { label = "🧪 /diag servidor", cb = function()
+            local d = Guard.diag()
+            if d then
+                clipboard(jenc(d))
+                Notify("Diag del Worker copiado — secretFp: " .. tostring(d.secretFp or "?"), M.ACCENT, 5)
+            else
+                Notify("Sin respuesta del Worker", M.RED, 4)
+            end
+        end },
+    })
+end
+
+-- ══════════════════════════════════════
+--  TAB: CRÉDITOS
+-- ══════════════════════════════════════
+local function buildCreditos(T)
+    mkSection(T, "💚 Proyecto")
+    mkCard(T, "ROSHAN GRACE HUB",
+        "Proyecto: " .. CONFIG.Name .. "\nVersión: v" .. CONFIG.Version .. " «" .. CONFIG.Codename .. "»\n© 2026 " .. CONFIG.Owner .. " — uso personal y de la comunidad", M.ACCENT)
+    mkCard(T, "👑 OWNER", CONFIG.Owner .. "\nFundador, desarrollo, diseño y mantenimiento del hub y del Guard.", M.GOLD)
+
+    mkSection(T, "👥 Equipo de desarrollo")
+    for _, d in ipairs(CONFIG.Credits.Devs) do
+        mkCard(T, d[1], d[2], M.CYAN)
+    end
+
+    mkSection(T, "🤝 Colaboradores")
+    for _, d in ipairs(CONFIG.Credits.Colabs) do
+        mkCard(T, d[1], d[2], M.PURPLE)
+    end
+
+    mkSection(T, "🕓 Historial de versiones")
+    for _, v in ipairs(CONFIG.VersionHistory) do
+        mkCard(T, v[1], v[2], M.GRAYLT)
+    end
+
+    mkSection(T, "💬 Comunidad")
+    mkBtn(T, "💬 " .. CONFIG.Discord:gsub("https://", ""), Color3.fromRGB(45, 65, 195), function()
+        clipboard(CONFIG.Discord)
+        Notify("Discord copiado", M.CYAN)
+    end)
+    mkCard(T, "🙏 Agradecimientos",
+        "Gracias a toda la comunidad de ROSHAN GRACE HUB por el apoyo, los reportes y el feedback. Gracias al equipo de Grace por el juego. Este hub se hace con cariño para jugar en grupo. 💚", M.PINK)
+end
+
+-- ══════════════════════════════════════
+--  TAB: AYUDA
+-- ══════════════════════════════════════
+local function buildAyuda(T)
+    mkSection(T, "❓ Preguntas frecuentes")
+    mkCard(T, "¿Cómo abro el hub?",
+        "PC: tecla [R] o el botón flotante R. Móvil: botón flotante R (arrastrable a cualquier borde). El panel se arrastra desde su barra superior.", M.ACCENT)
+    mkCard(T, "¿Cómo consigo una key?",
+        "Entra al Discord del hub y sigue las instrucciones del canal de keys. Las keys se registran en el Guard del servidor; el script solo guarda huellas (hash), nunca la key en texto.", M.CYAN)
+    mkCard(T, "¿Por qué no aparece la pestaña Dev?",
+        "La pestaña Dev solo existe para OWNER, CO-OWNER y DEVELOPER según el rol que devuelve el servidor firmado. Si te asignaron un rol y no aparece, usa Re-check en la pestaña Estado.", M.PURPLE)
+    mkCard(T, "¿Me laggea el juego?",
+        "Usa el FPS Booster (pestaña Visual) y apaga los ESP cuando no los necesites. El ESP de la V4 usa un presupuesto de highlights para no saturar el cliente.", M.GOLD)
+    mkCard(T, "¿El Guard está caído?",
+        "El hub entra en modo offline si CONFIG.StrictMode = false (roles limitados). En modo estricto no se abre sin Guard. Verifica CONFIG.WorkerURL y el despliegue del Worker.", M.ORANGE)
+    mkCard(T, "🔒 Seguridad",
+        "Nadie del staff te pedirá tu key por mensaje privado. El webhook, el token del bot, la Bloxlink key y la Owner Key nunca viajan dentro del script: viven solo en las variables del Worker.", M.RED)
+
+    mkSection(T, "🎮 Controles")
+    mkCard(T, "PC",
+        "[R] abrir/cerrar · Fly: WASD + Space/Shift · Infinite Jump: Space en el aire · Arrastrar: header del panel o botón R", M.ACCENT2)
+    mkCard(T, "Móvil / Tablet",
+        "El panel se adapta solo al tamaño de tu pantalla (nada se corta ni se estira) · Botón R flotante y arrastrable · Pad táctil del Fly · Escala de UI ajustable en Ajustes", M.ACCENT2)
+
+    mkSection(T, "🛠 Solución de problemas")
+    mkCard(T, "Checklist rápido",
+        "1) ¿WorkerURL correcta? 2) ¿Binding KV = RGH? 3) ¿SECRET igual en Worker y script? 4) ¿La key está registrada (/keyadd)? 5) ¿Tu UserId está en las listas de roles? Usa Estado > /diag servidor.", M.CYAN)
+end
+
+-- ══════════════════════════════════════
+--  TAB: DEV (solo OWNER / CO-OWNER / DEVELOPER)
+-- ══════════════════════════════════════
+local function buildDev(T)
+    mkCard(T, "🔧 Zona DEV",
+        "Acceso: OWNER / CO-OWNER / DEVELOPER. Todas las acciones se validan en el Worker con tu UserId + Owner Key. La Owner Key NUNCA se escribe en el script.", M.PURPLE)
+
+    mkSection(T, "🔑 Owner Key")
+    local okIn = mkInput(T, "pega tu OWNER_KEY (queda en memoria y archivo local)")
+    if Auth.ownerKey then okIn.Text = Auth.ownerKey end
+    mkBtnRow(T, {
+        { label = "💾 Usar / recordar", cb = function()
+            local v = okIn.Text:gsub("%s", "")
+            if v == "" then Notify("Escribe la Owner Key", M.RED, 3) return end
+            Auth.ownerKey = v
+            fileWrite(CONFIG.OwnerFile, v)
+            Notify("Owner Key lista (memoria + archivo local)", M.ACCENT, 3)
+        end },
+        { label = "🧪 Probar", cb = function()
+            if not Auth.ownerKey or Auth.ownerKey == "" then Notify("Sin Owner Key", M.RED, 3) return end
+            Notify("Consultando /diag...", M.CYAN, 2)
+            task.wait(0.05)
+            local d = Guard.diag()
+            if d and d.owner == "ok" then
+                Notify("Owner autenticada en el Guard ✓", M.ACCENT, 4)
+            elseif d then
+                Notify("Guard dice: " .. tostring(d.owner), M.RED, 4)
+            else
+                Notify("Sin respuesta del Worker", M.RED, 4)
+            end
+        end },
+    })
+
+    mkSection(T, "⛔ Baneos globales")
+    local banIn = mkInput(T, "id:123456 · name:usuario · hwid:xxx · key:hash (o escribe tal cual)")
+    local motivoIn = mkInput(T, "motivo del baneo (opcional)")
+    mkBtnRow(T, {
+        { label = "⛔ Ban ID", cb = function()
+            local v = tostring(banIn.Text:gsub("^id:", ""))
+            local r, e = Guard.admin("/ban", { t = "id", v = v, reason = motivoIn.Text, by = lp.Name })
+            Notify(r and ("Baneado: " .. tostring(r.banned)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 4)
+        end },
+        { label = "⛔ Ban Nombre", cb = function()
+            local v = tostring(banIn.Text:gsub("^name:", ""))
+            local r, e = Guard.admin("/ban", { t = "name", v = v, reason = motivoIn.Text, by = lp.Name })
+            Notify(r and ("Baneado: " .. tostring(r.banned)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 4)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "⛔ Ban key (hash)", cb = function()
+            local v = tostring(banIn.Text:gsub("^key:", "")):lower()
+            local r, e = Guard.admin("/ban", { t = "key", v = v, reason = motivoIn.Text, by = lp.Name })
+            Notify(r and ("Key baneada: " .. tostring(r.banned)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 4)
+        end },
+        { label = "✅ Unban (auto)", cb = function()
+            local raw = tostring(banIn.Text):gsub("%s", "")
+            if raw == "" then Notify("Escribe el valor (o tipo:valor)", M.GOLD, 3) return end
+            local t, v = raw:match("^(%a+):(.+)$")
+            if not t then
+                if raw:match("^%d+$") then t, v = "id", raw else t, v = "name", raw end
+            end
+            t = t:lower()
+            if t == "user" or t == "usuario" then t = "name" end
+            if not (({ id = true, name = true, hwid = true, key = true })[t]) then
+                Notify("Tipo desconocido: " .. t, M.RED, 3) return
+            end
+            local r, e = Guard.admin("/unban", { t = t, v = v, by = lp.Name })
+            Notify(r and ("Desbaneado: " .. tostring(r.unbanned)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 4)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "📋 Listar baneos", cb = function()
+            local r, e = Guard.admin("/list", {})
+            if r and r.bans then
+                local out = {}
+                for _, b in ipairs(r.bans) do out[#out + 1] = b.k .. " — " .. tostring(b.reason or "") end
+                clipboard(table.concat(out, "\n"))
+                Notify(#out .. " baneos copiados al portapapeles", M.ACCENT, 3)
+            else
+                Notify("Error: " .. tostring(e), M.RED, 4)
+            end
+        end },
+        { label = "✅ Unban HWID", cb = function()
+            local raw = tostring(banIn.Text):gsub("%s", ""):gsub("^hwid:", "")
+            if raw == "" then Notify("Escribe la huella HWID", M.GOLD, 3) return end
+            local r, e = Guard.admin("/unban", { t = "hwid", v = raw, by = lp.Name })
+            Notify(r and "HWID desbaneado" or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 4)
+        end },
+    })
+
+    -- 🧹 V4.1: revierte un baneo que se extendió a más usuarios (2 toques = confirmación)
+    local purgeBtn
+    local purgeArmed = false
+    purgeBtn = mkBtn(T, "🧹 Desbanear TODOS (2 toques)", Color3.fromRGB(60, 16, 16), function()
+        if not purgeArmed then
+            purgeArmed = true
+            if purgeBtn then purgeBtn.Text = "  ⚠ TOCA OTRA VEZ PARA CONFIRMAR" end
+            task.delay(6, function()
+                purgeArmed = false
+                if purgeBtn and purgeBtn.Parent then purgeBtn.Text = "  🧹 Desbanear TODOS (2 toques)" end
+            end)
+            return
+        end
+        purgeArmed = false
+        if purgeBtn then purgeBtn.Text = "  ⏳ Limpiando baneos..." end
+        task.spawn(function()
+            local r, e = Guard.admin("/list", {})
+            if not (r and r.bans) then
+                Notify("Error: " .. tostring(e), M.RED, 4)
+                if purgeBtn and purgeBtn.Parent then purgeBtn.Text = "  🧹 Desbanear TODOS (2 toques)" end
+                return
+            end
+            local n = 0
+            for _, bn in ipairs(r.bans) do
+                local t, v = tostring(bn.k or ""):match("^ban:([^:]+):(.+)$")
+                if t and v then
+                    if Guard.admin("/unban", { t = t, v = v, by = lp.Name }) then n = n + 1 end
+                    task.wait(0.12)
+                end
+                if n >= 150 then break end
+            end
+            if purgeBtn and purgeBtn.Parent then purgeBtn.Text = "  🧹 Desbanear TODOS (2 toques)" end
+            Notify("Limpieza lista — " .. n .. " baneos eliminados. Vuelve a banear SOLO al UserId correcto.", M.ACCENT, 6)
+        end)
+    end)
+
+    mkSection(T, "🛡 Roles (override en servidor)")
+    local roleIn = mkInput(T, "UserId para asignar rol")
+    mkBtnRow(T, {
+        { label = "OWNER", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "OWNER", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+        { label = "CO-OWNER", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "CO-OWNER", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+        { label = "DEVELOPER", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "DEVELOPER", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "ADMIN", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "ADMIN", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+        { label = "MODERATOR", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "MODERATOR", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+        { label = "PREMIUM", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "PREMIUM", by = lp.Name })
+            Notify(r and ("Rol asignado: " .. tostring(r.role)) or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+    })
+    mkBtnRow(T, {
+        { label = "USER (quita override)", cb = function()
+            local r, e = Guard.admin("/role", { v = roleIn.Text, role = "USER", by = lp.Name })
+            Notify(r and "Override de rol quitado" or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+    })
+
+    mkSection(T, "🔑 Keys del Guard")
+    local keyIn = mkInput(T, "key EN TEXTO (solo esta vez: se guarda como hash)")
+    local noteIn = mkInput(T, "nota de la key (opcional)")
+    mkBtnRow(T, {
+        { label = "➕ Registrar key", cb = function()
+            local r, e = Guard.admin("/keyadd", { k = keyIn.Text, note = noteIn.Text, by = lp.Name })
+            if r then
+                Notify("Key registrada — hash: " .. tostring(r.hash), M.ACCENT, 5)
+                keyIn.Text = ""
+            else
+                Notify("Error: " .. tostring(e), M.RED, 4)
+            end
+        end },
+        { label = "➖ Borrar key", cb = function()
+            local r, e = Guard.admin("/keydel", { k = keyIn.Text, by = lp.Name })
+            Notify(r and "Key borrada del Guard" or ("Error: " .. tostring(e)), r and M.ACCENT or M.RED, 3)
+        end },
+        { label = "📋 Listar (hashes)", cb = function()
+            local r, e = Guard.admin("/keylist", {})
+            if r and r.keys then
+                local out = {}
+                for _, k in ipairs(r.keys) do out[#out + 1] = k.hash .. " — " .. tostring(k.note or "") end
+                clipboard(table.concat(out, "\n"))
+                Notify(#out .. " keys copiadas (solo hashes)", M.ACCENT, 3)
+            else
+                Notify("Error: " .. tostring(e), M.RED, 4)
+            end
+        end },
+    })
+
+    mkSection(T, "📊 Diagnóstico y logs")
+    mkBtnRow(T, {
+        { label = "👥 Perfiles recientes", cb = function()
+            local r, e = Guard.admin("/profiles", {})
+            if r and r.profiles then
+                local out = {}
+                for _, p in ipairs(r.profiles) do
+                    out[#out + 1] = p.id .. " @" .. tostring(p.n or "?") .. " (" .. tostring(p.e or "?") .. ")"
+                end
+                clipboard(table.concat(out, "\n"))
+                Notify(#out .. " perfiles copiados", M.ACCENT, 3)
+            else
+                Notify("Error: " .. tostring(e), M.RED, 4)
+            end
+        end },
+        { label = "📨 Test de log", cb = function()
+            Guard.log("Prueba de log V4",
+                "Enviado desde el hub por @" .. lp.Name,
+                { { name = "UserId", value = tostring(lp.UserId), inline = true } },
+                0x00e64d)
+            Notify("Log enviado al Worker (requiere WEBHOOK configurado)", M.ACCENT, 4)
+        end },
+    })
+end
+
+-- ══════════════════════════════════════
+--  REGISTRO DE PESTAÑAS
+-- ══════════════════════════════════════
+local function registerTabs()
+    addTabDef("main",     "Main",     "🏠", buildMain)
+    addTabDef("visual",   "Visual",   "👁", buildVisual)
+    addTabDef("player",   "Player",   "🏃", buildPlayer)
+    addTabDef("reprieve", "Reprieve", "🙏", buildReprieve)
+    addTabDef("perfil",   "Perfil",   "👤", buildPerfil)
+    addTabDef("roles",    "Roles",    "🛡", buildRoles)
+    addTabDef("ajustes",  "Ajustes",  "⚙", buildAjustes)
+    addTabDef("estado",   "Estado",   "📡", buildEstado)
+    addTabDef("creditos", "Créditos", "💚", buildCreditos)
+    addTabDef("ayuda",    "Ayuda",    "❓", buildAyuda)
+    if hasPerm("dev") then
+        addTabDef("dev", "Dev", "🔧", buildDev)
+    end
+end
+
+-- ══════════════════════════════════════
+--  ARRANQUE AUTENTICADO
+-- ══════════════════════════════════════
+local function boot()
+    task.spawn(function()
+        setLoad(0.08, "Cargando ajustes...")
+        loadConfig()
+        applyTheme(cfg.theme)
+        UIScaleObj.Scale = cfg.scale
+        NotifDur = cfg.notifDur
+        task.wait(0.15)
+
+        setLoad(0.18, "Conectando con ROSHAN GUARD...")
+        local res, err = Guard.check(Auth.keyHash, false)
+
+        if res and res.banned then
+            banScreen(res.reason)
+            if Auth.banned or not SG.Parent then return end
+        end
+
+        local online = false
+        if res then
+            online = true
+            Auth.status = "ONLINE"
+            Auth.role = res.role or "USER"
+            Auth.lastRes = res
+            if res.sigOK == false then
+                Notify("⚠ Respuesta del Guard con firma inválida — revisa el SECRET", M.ORANGE, 7, "⚠")
+            end
+        else
+            Auth.status = "OFFLINE"
+            Notify("Guard sin conexión (" .. tostring(err) .. ") — modo offline", M.ORANGE, 6, "⚠")
+            if CONFIG.StrictMode then
+                setLoad(0.2, "Modo ESTRICTO: sin Guard no hay acceso.")
+                task.wait(4)
+                if _G.RGH_V4 and _G.RGH_V4.Destroy then _G.RGH_V4.Destroy() end
+                return
+            end
+            if Auth.keyHash and not LOCAL_KEYS[Auth.keyHash] then
+                Auth.keyHash = nil
+            end
+        end
+
+        local needsKey = false
+        if online then
+            needsKey = (res.keyvalid == false)
+        else
+            needsKey = (Auth.keyHash == nil)
+        end
+        if needsKey then
+            keyScreen(online)
+            if Auth.banned or not SG.Parent then return end
+        end
+
+        setLoad(0.45, "Autenticado — rol: " .. Auth.role)
+        task.wait(0.1)
+        setLoad(0.55, "Construyendo interfaz...")
+
+        registerTabs()
+        buildTabsUI()
+        for i, def in ipairs(tabDefs) do
+            pcall(def.build, i)
+        end
+
+        setLoad(0.85, "Aplicando ajustes...")
+        setFpsHud(cfg.fpsHud)
+        updateRoleUI()
+        pcall(_G.RGH_V4.RefreshEstado)
+
+        setLoad(0.93, "Sincronizando perfil con el Guard...")
+        Guard.sendProfile()
+        task.wait(0.2)
+
+        loaderDone()
+        MF.Visible = true
+        shadow.Visible = true
+        hubVisible = true
+        RBtn.Visible = true
+
+        Notify("Bienvenido " .. lp.DisplayName .. " — rol " .. Auth.role, M.ACCENT, 5, "★")
+        task.wait(0.5)
+        Notify("Tecla [R] o botón R para abrir/cerrar", M.ACCENT2, 5, "ℹ")
+        if WORKER_SECRET == "" then
+            Notify("Sin SECRET: respuestas sin validar (pestaña Estado)", M.ORANGE, 7, "⚠")
+        elseif digest(WORKER_SECRET):sub(1, 8) == DEFAULT_SECRET_FP then
+            Notify("⚠ SECRET de fábrica — cámbialo (pestaña Estado)", M.ORANGE, 8, "⚠")
+        end
+    end)
+end
+
+-- ══════════════════════════════════════
+--  API PÚBLICA + DESTROY (limpieza total, sin fugas)
+-- ══════════════════════════════════════
+_G.RGH_V4.Version = CONFIG.Version
+_G.RGH_V4.Role = function() return Auth.role end
+_G.RGH_V4.Notify = Notify
+
+_G.RGH_V4.Destroy = function()
+    -- 1. apagar todos los estados
+    for k in pairs(state) do
+        if type(state[k]) == "boolean" then state[k] = false end
+    end
+    Auth.banned = false
+
+    -- 2. desconectar TODAS las conexiones registradas
+    for _, c in ipairs(Conns) do
+        pcall(function() c:Disconnect() end)
+    end
+    Conns = {}
+
+    -- 3. limpiar ESP y atributos
+    espHLList = clearHL(espHLList)
+    pespHLList = clearHL(pespHLList)
+    bespHLList = clearHL(bespHLList)
+    pcall(function()
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj.GetAttribute and obj:GetAttribute("RGH_ESP") then
+                obj:SetAttribute("RGH_ESP", nil)
+            end
+        end
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local c = pl.Character
+            if c and c:GetAttribute("RGH_ESP") then c:SetAttribute("RGH_ESP", nil) end
+        end
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local c = pl.Character
+            local h = c and c:FindFirstChild("HumanoidRootPart")
+            local tag = h and h:FindFirstChild("RGH_PlayerTag")
+            if tag then tag:Destroy() end
+        end
+    end)
+
+    -- 4. restaurar personaje
+    pcall(function()
+        local h = getHum()
+        if h then
+            h.PlatformStand = false
+            pcall(function() h.WalkSpeed = 16 end)
+        end
+        local c = lp.Character
+        if c then
+            for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then pcall(function() p.CanCollide = true end) end
+            end
+        end
+    end)
+
+    -- 5. restaurar cámara e iluminación
+    if camBackup then
+        pcall(function()
+            lp.CameraMaxZoomDistance = camBackup.maxz
+            lp.CameraMinZoomDistance = camBackup.minz
+            lp.CameraMode = camBackup.mode
+        end)
+    end
+    pcall(function()
+        for k, v in pairs(origLight) do Lighting[k] = v end
+        for v, st in pairs(origEffectStates) do v.Enabled = st end
+    end)
+    pcall(function()
+        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.DefaultAuto
+        settings().Network.IncomingReplicationLag = 0
+    end)
+
+    -- 6. destruir UI (panel + capa de overlays)
+    pcall(function() SG:Destroy() end)
+    pcall(function() SGO:Destroy() end)
+    _G.RGH_V4 = nil
+end
+
+-- ══════════════════════════════════════
+--  STARTUP
+-- ══════════════════════════════════════
+boot()
